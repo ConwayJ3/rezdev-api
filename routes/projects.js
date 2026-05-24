@@ -1,0 +1,186 @@
+const express = require('express');
+const router  = express.Router();
+const { supabaseAdmin } = require('../lib/supabase');
+const { requireAuth, requireRole, requireProjectAccess } = require('../middleware/auth');
+
+// GET /projects — list all projects for this company
+router.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await req.db
+    .from('projects')
+    .select(`
+      id, project_key, name, address, city, state, status, project_type,
+      beds, baths, livable_sf, total_sf, created_at, updated_at,
+      phases(id, name, status, start_date, end_date, sort_order)
+    `)
+    .eq('company_id', req.companyId)
+    .order('created_at', { ascending: false });
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// GET /projects/groups — lot groups with members
+router.get('/groups', requireAuth, async (req, res) => {
+  const { data, error } = await req.db
+    .from('lot_groups')
+    .select(`
+      id, name, area, client, budget_per_lot, created_at,
+      lot_group_members(
+        id, lot_name, lot_number, status, progress, budget, address, sort_order,
+        project_id,
+        projects(id, name, status)
+      )
+    `)
+    .eq('company_id', req.companyId)
+    .order('created_at', { ascending: false });
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /projects/groups — create a new lot group
+router.post('/groups', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { name, area, client, budget_per_lot, lots } = req.body;
+  if(!name) return res.status(400).json({ error: 'Group name is required' });
+
+  // Create the group
+  const { data: group, error: groupErr } = await supabaseAdmin
+    .from('lot_groups')
+    .insert({ name, area, client, budget_per_lot: budget_per_lot||0, company_id: req.companyId })
+    .select()
+    .single();
+
+  if(groupErr) return res.status(400).json({ error: groupErr.message });
+
+  // Create individual lot projects and group members
+  if(lots && lots.length) {
+    for(let i=0; i<lots.length; i++) {
+      const lot = lots[i];
+      // Create the project
+      const { data: proj, error: projErr } = await supabaseAdmin
+        .from('projects')
+        .insert({
+          company_id:   req.companyId,
+          name:         lot.name || `Lot ${i+1}`,
+          address:      lot.address || '',
+          status:       'planning',
+          created_by:   req.userId,
+        })
+        .select()
+        .single();
+      if(projErr) continue;
+
+      // Link to group
+      await supabaseAdmin.from('lot_group_members').insert({
+        group_id:   group.id,
+        project_id: proj.id,
+        lot_name:   lot.name || `Lot ${i+1}`,
+        lot_number: i+1,
+        status:     'planning',
+        budget:     lot.budget || budget_per_lot || 0,
+        sort_order: i,
+      });
+    }
+  }
+
+  const { data: full } = await supabaseAdmin
+    .from('lot_groups')
+    .select(`id, name, area, client, budget_per_lot, lot_group_members(*)`)
+    .eq('id', group.id)
+    .single();
+
+  res.status(201).json(full);
+});
+
+// GET /projects/:id
+router.get('/:id', requireAuth, requireProjectAccess, async (req, res) => {
+  const { data, error } = await req.db
+    .from('projects')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+
+  if(error) return res.status(404).json({ error: 'Project not found' });
+  res.json(data);
+});
+
+// POST /projects
+router.post('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { name, address, city, state, zip, county, project_type, notes } = req.body;
+  if(!name) return res.status(400).json({ error: 'Project name is required' });
+
+  const { data, error } = await supabaseAdmin
+    .from('projects')
+    .insert({
+      company_id: req.companyId,
+      name, address, city, state, zip, county, project_type, notes,
+      created_by: req.userId,
+    })
+    .select()
+    .single();
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// PUT /projects/:id — update project info
+router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
+  const allowed = ['name','address','city','state','zip','county','neighborhood',
+    'status','project_type','beds','baths','livable_sf','total_sf','lot_area',
+    'site_width','site_depth','lot','block','zoning_district','coverage_ratio',
+    'front_setback','rear_setback','side_setback','max_height','notes'];
+  const updates = {};
+  allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
+  updates.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabaseAdmin
+    .from('projects')
+    .update(updates)
+    .eq('id', req.params.id)
+    .eq('company_id', req.companyId)
+    .select()
+    .single();
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// DELETE /projects/:id
+router.delete('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { error } = await supabaseAdmin
+    .from('projects')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('company_id', req.companyId);
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// GET /projects/:id/clients — clients linked to project
+router.get('/:id/clients', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
+  const { data, error } = await req.db
+    .from('project_clients')
+    .select('*')
+    .eq('project_id', req.params.id);
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /projects/:id/clients — link a client to a project
+router.post('/:id/clients', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { client_name, email, phone } = req.body;
+  if(!client_name) return res.status(400).json({ error: 'Client name required' });
+
+  const { data, error } = await supabaseAdmin
+    .from('project_clients')
+    .insert({ project_id: req.params.id, client_name, email, phone })
+    .select()
+    .single();
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+module.exports = router;
