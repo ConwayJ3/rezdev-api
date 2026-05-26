@@ -63,6 +63,7 @@ app.use('/projects/:projectId/qc',             qcRouter);
 // ── Top-level routes ──────────────────────────────────────────────
 app.use('/contractors', contractorRoutes);
 app.use('/users',       userRoutes);
+app.use('/companies',   userRoutes);
 app.use('/rfps',        rfpRouter);
 
 // ── 404 ───────────────────────────────────────────────────────────

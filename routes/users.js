@@ -123,3 +123,25 @@ router.post('/audit-log', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+// ── Company routes ────────────────────────────────────
+// PUT /companies/:id
+router.put('/companies/:id', async (req, res) => {
+  if(!req.user || !['owner','builder'].includes(req.userRole)){
+    return res.status(403).json({ error: 'Not authorized' });
+  }
+  const allowed = ['name','legal_name','address','city','state','zip','phone','email','website','primary_color','secondary_color','license_number'];
+  const updates = {};
+  allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
+  updates.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabaseAdmin
+    .from('companies')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select()
+    .single();
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
