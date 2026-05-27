@@ -47,7 +47,9 @@ router.post('/', requireAuth, requireProjectAccess, upload.array('files', 20), a
     const path = `${projectId}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.-]/g,'_')}`;
 
     try {
+      console.log('[Files] Upload start:', file.originalname, 'role:', req.userRole, 'userId:', req.userId, 'projectId:', projectId);
       const storagePath = await uploadFile('files', path, file.buffer, file.mimetype);
+      console.log('[Files] Storage upload OK:', storagePath);
 
       const { data, error } = await supabaseAdmin
         .from('project_files')
