@@ -57,7 +57,7 @@ router.post('/', requireAuth, requireProjectAccess, upload.array('files', 20), a
           storage_url: storagePath,
           file_size:   file.size,
           mime_type:   file.mimetype,
-          source:      req.userRole,
+          source:      ['builder','pm','client','contractor'].includes(req.userRole) ? req.userRole : 'builder',
           uploaded_by: req.userId,
         })
         .select()
