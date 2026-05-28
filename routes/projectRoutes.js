@@ -146,7 +146,7 @@ const payRouter = express.Router({ mergeParams: true });
 
 payRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
   const { data, error } = await req.db.from('contractor_payments')
-    .select(`*, payment_draws(*), contracts(title, contractor_id)`)
+    .select(`id, project_id, contracted_amount, payment_method, contractor_name, created_at, payment_draws(*), contracts(title, contractor_id)`)
     .eq('project_id', req.params.projectId);
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
@@ -160,6 +160,7 @@ payRouter.post('/', requireAuth, requireRole('owner','builder'), requireProjectA
     project_id:        req.params.projectId,
     contracted_amount: contracted_amount||0,
     payment_method:    payment_method||'wire',
+    contractor_name:   contractor_name || '',
   };
   if(contract_id) insert.contract_id = contract_id;
   if(isUUID) insert.contractor_id = contractor_id;
