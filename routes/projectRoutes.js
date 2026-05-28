@@ -160,7 +160,6 @@ payRouter.post('/', requireAuth, requireRole('owner','builder'), requireProjectA
     project_id:        req.params.projectId,
     contracted_amount: contracted_amount||0,
     payment_method:    payment_method||'wire',
-    notes:             notes || contractor_name || '',
   };
   if(contract_id) insert.contract_id = contract_id;
   if(isUUID) insert.contractor_id = contractor_id;
