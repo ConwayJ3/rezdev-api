@@ -21,6 +21,7 @@ const {
 } = require('./routes/projectRoutes');
 
 const app = express();
+app.set('trust proxy', 1); // Trust Railway's proxy
 
 // Rate limiting
 const generalLimiter = rateLimit({
