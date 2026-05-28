@@ -153,10 +153,19 @@ payRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 });
 
 payRouter.post('/', requireAuth, requireRole('owner','builder'), requireProjectAccess, async (req, res) => {
-  const { contract_id, contractor_id, contracted_amount, payment_method } = req.body;
+  const { contract_id, contractor_id, contracted_amount, payment_method, contractor_name, phase, notes } = req.body;
+  // contractor_id is optional — only include if it looks like a UUID
+  const isUUID = contractor_id && /^[0-9a-f-]{36}$/.test(contractor_id);
+  const insert = {
+    project_id:        req.params.projectId,
+    contracted_amount: contracted_amount||0,
+    payment_method:    payment_method||'wire',
+    notes:             notes || contractor_name || '',
+  };
+  if(contract_id) insert.contract_id = contract_id;
+  if(isUUID) insert.contractor_id = contractor_id;
   const { data, error } = await supabaseAdmin.from('contractor_payments')
-    .insert({ project_id: req.params.projectId, contract_id, contractor_id, contracted_amount: contracted_amount||0, payment_method: payment_method||'wire' })
-    .select().single();
+    .insert(insert).select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
 });
