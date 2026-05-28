@@ -2,6 +2,7 @@ require('dotenv').config();
 require('express-async-errors');
 
 const express    = require('express');
+const rateLimit = require('express-rate-limit');
 const cors       = require('cors');
 const helmet     = require('helmet');
 const morgan     = require('morgan');
@@ -20,6 +21,26 @@ const {
 } = require('./routes/projectRoutes');
 
 const app = express();
+
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500,
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20, // stricter for login
+  message: { error: 'Too many login attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/auth', authLimiter);
+app.use(generalLimiter);
 
 // ── Security & Parsing ────────────────────────────────────────────
 app.use(helmet());
