@@ -13,21 +13,28 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
     if(!contract_id || !signer_email) return res.status(400).json({ error: 'contract_id and signer_email required' });
     const { data: contract, error: cErr } = await supabaseAdmin.from('contracts').select('*').eq('id', contract_id).single();
     if(cErr || !contract) return res.status(404).json({ error: 'Contract not found' });
-    const swRes = await fetch(`${SIGNWELL_API}/documents`, {
-      method: 'POST',
-      headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        test_mode: false,
-        name: contract.title || 'RezDev Contract',
-        text: contract.body || '',
-        recipients: [
-          { id: '1', name: signer_name || 'Client', email: signer_email, role: 'signer' },
-          { id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer' }
-        ],
-        reminder_enabled: true,
-        apply_signing_order: true,
-      }),
-    });
+
+    const contractType = contract.contract_type || 'contractor';
+    const { data: tmplRecord } = await supabaseAdmin.from('signwell_templates').select('signwell_template_id').eq('company_id', req.companyId).eq('contract_type', contractType).single();
+    let swRes;
+    if(tmplRecord && tmplRecord.signwell_template_id){
+      swRes = await fetch(SIGNWELL_API+'/document_templates/documents', { method: 'POST', headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ test_mode: false, template_id: tmplRecord.signwell_template_id, name: contract.title || 'RezDev Contract', recipients: [{ id: '1', name: signer_name || 'Recipient', email: signer_email, role: 'signer' }, { id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer' }], reminder_enabled: true, apply_signing_order: true }) });
+    } else {
+        method: 'POST',
+        headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          test_mode: false,
+          name: contract.title || 'RezDev Contract',
+          text: contract.body || '',
+          recipients: [
+            { id: '1', name: signer_name || 'Client', email: signer_email, role: 'signer' },
+            { id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer' }
+          ],
+          reminder_enabled: true,
+          apply_signing_order: true,
+        }),
+      });
+    }
     const swData = await swRes.json();
     if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
     await supabaseAdmin.from('contracts').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', contract_id);
