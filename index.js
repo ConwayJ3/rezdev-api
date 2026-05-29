@@ -41,6 +41,7 @@ const authLimiter = rateLimit({
 });
 
 app.use('/auth', authLimiter);
+const signwellRouter = require('./routes/signwell');
 app.use('/signwell', signwellRouter);
 app.use(generalLimiter);
 
