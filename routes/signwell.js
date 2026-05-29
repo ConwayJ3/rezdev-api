@@ -130,8 +130,16 @@ router.post('/templates/create', requireAuth, requireRole('owner','builder'), as
       body: JSON.stringify({
         name: template_name || contract_type + ' template',
         files: [{ name: template_name || contract_type, file_url }],
-        with_signature_page: false,
+        with_signature_page: true,
         test_mode: false,
+        fields: [[
+          { api_id: 'sig_recipient', type: 'signature', page: 1, x: 70, y: 650, width: 200, height: 40, required: true, recipient_id: '1' },
+          { api_id: 'date_recipient', type: 'date', page: 1, x: 300, y: 650, width: 120, height: 30, required: true, recipient_id: '1' }
+        ]],
+        recipients: [
+          { id: '1', placeholder_name: 'Recipient' },
+          { id: '2', placeholder_name: 'Builder' }
+        ],
       }),
     });
     const swData = await swRes.json();
