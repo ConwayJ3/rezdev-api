@@ -46,8 +46,8 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
     let swRes;
     if(tmplRecord && tmplRecord.signwell_template_id){
       const templateRecipients = [
-        { placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email },
-        { placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email },
+        { id: '1', placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email },
+        { id: '2', placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email },
       ];
       swRes = await fetch(SIGNWELL_API+'/document_templates/documents', {
         method: 'POST',
