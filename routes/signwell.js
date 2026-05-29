@@ -9,10 +9,24 @@ const SW_KEY = process.env.SIGNWELL_API_KEY;
 // POST /signwell/send
 router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { contract_id, signer_name, signer_email } = req.body;
-    if(!contract_id || !signer_email) return res.status(400).json({ error: 'contract_id and signer_email required' });
-    const { data: contract, error: cErr } = await supabaseAdmin.from('contracts').select('*').eq('id', contract_id).single();
-    if(cErr || !contract) return res.status(404).json({ error: 'Contract not found' });
+    const { contract_id, signer_name, signer_email, contract_type, body } = req.body;
+    if(!signer_email) return res.status(400).json({ error: 'signer_email required' });
+    
+    let contract = null;
+    if(contract_id && !contract_id.startsWith('temp-')){
+      const { data: c, error: cErr } = await supabaseAdmin.from('contracts').select('*').eq('id', contract_id).single();
+      if(!cErr && c) contract = c;
+    }
+    
+    // If no contract found, use the request body to create a minimal one
+    if(!contract){
+      contract = {
+        id: contract_id,
+        contract_type: contract_type || 'contractor',
+        body: body || 'Sent via SignWell template',
+        title: contract_type || 'Contract',
+      };
+    }
 
     const contractType = contract.contract_type || 'contractor';
     const { data: tmplRecord } = await supabaseAdmin
