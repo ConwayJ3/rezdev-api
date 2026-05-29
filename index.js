@@ -41,6 +41,7 @@ const authLimiter = rateLimit({
 });
 
 app.use('/auth', authLimiter);
+app.use('/signwell', signwellRouter);
 app.use(generalLimiter);
 
 // ── Security & Parsing ────────────────────────────────────────────
