@@ -29,6 +29,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
     }
 
     const contractType = contract.contract_type || 'contractor';
+    console.log('[SignWell] Looking for template, type:', contractType, 'company:', req.companyId);
     const { data: tmplRecord } = await supabaseAdmin
       .from('signwell_templates')
       .select('signwell_template_id')
