@@ -36,6 +36,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
       .eq('contract_type', contractType)
       .single();
 
+    console.log('[SignWell Send] User:', req.user?.email, 'Company:', req.companyId);
     const recipients = [
       { id: '1', name: signer_name || 'Recipient', email: signer_email, role: 'signer' },
       { id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer' },
