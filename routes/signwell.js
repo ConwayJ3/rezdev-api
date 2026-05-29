@@ -182,4 +182,69 @@ router.delete('/templates/:contract_type', requireAuth, requireRole('owner','bui
   }
 });
 
+// POST /signwell/templates/create — upload PDF and create SignWell template
+router.post('/templates/create', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const { contract_type, template_name, file_url } = req.body;
+    if(!contract_type || !file_url) return res.status(400).json({ error: 'contract_type and file_url required' });
+
+    // Create template in SignWell from file URL
+    const swRes = await fetch(`${SIGNWELL_API}/document_templates`, {
+      method: 'POST',
+      headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: template_name || contract_type + ' template',
+        files: [{ name: template_name || contract_type, file_url }],
+        with_signature_page: false,
+        test_mode: false,
+      }),
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
+
+    // Save template ID to Supabase
+    const { data, error } = await supabaseAdmin
+      .from('signwell_templates')
+      .upsert({
+        company_id:           req.companyId,
+        contract_type,
+        signwell_template_id: swData.id,
+        template_name:        template_name || contract_type,
+      }, { onConflict: 'company_id,contract_type' })
+      .select().single();
+
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ success: true, template_id: swData.id, record: data });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /signwell/templates — get all templates for this company
+router.get('/templates', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('signwell_templates')
+      .select('*')
+      .eq('company_id', req.companyId);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /signwell/templates/:contract_type — remove a template
+router.delete('/templates/:contract_type', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    await supabaseAdmin.from('signwell_templates')
+      .delete()
+      .eq('company_id', req.companyId)
+      .eq('contract_type', req.params.contract_type);
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
