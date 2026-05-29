@@ -45,6 +45,10 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
 
     let swRes;
     if(tmplRecord && tmplRecord.signwell_template_id){
+      const templateRecipients = [
+        { placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email },
+        { placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email },
+      ];
       swRes = await fetch(SIGNWELL_API+'/document_templates/documents', {
         method: 'POST',
         headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' },
@@ -52,7 +56,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
           test_mode: false,
           template_id: tmplRecord.signwell_template_id,
           name: contract.title || 'RezDev Contract',
-          recipients,
+          recipients: templateRecipients,
           reminder_enabled: true,
           apply_signing_order: true,
         }),
