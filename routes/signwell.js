@@ -94,7 +94,15 @@ router.get('/status/:documentId', requireAuth, async (req, res) => {
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20*1024*1024 } });
 
+router.options('/templates/upload', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.sendStatus(200);
+});
+
 router.post('/templates/upload', requireAuth, requireRole('owner','builder'), upload.single('file'), async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
   try {
     if(!req.file) return res.status(400).json({ error: 'No file provided' });
     const contractType = req.body.contract_type || 'contract';
