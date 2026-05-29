@@ -42,13 +42,6 @@ const authLimiter = rateLimit({
 
 app.use('/auth', authLimiter);
 const signwellRouter = require('./routes/signwell');
-app.use('/signwell', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  if(req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-}, signwellRouter);
 app.use(generalLimiter);
 
 // ── Security & Parsing ────────────────────────────────────────────
@@ -60,6 +53,13 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
+app.use('/signwell', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  if(req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+}, signwellRouter);
 app.use(express.urlencoded({ extended: true }));
 if(process.env.NODE_ENV !== 'test') app.use(morgan('dev'));
 
