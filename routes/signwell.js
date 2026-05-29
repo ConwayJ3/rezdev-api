@@ -62,6 +62,25 @@ router.get('/status/:documentId', requireAuth, async (req, res) => {
   }
 });
 
+// POST /signwell/templates/upload — upload PDF to Supabase Storage and return public URL
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20*1024*1024 } });
+
+router.post('/templates/upload', requireAuth, requireRole('owner','builder'), upload.single('file'), async (req, res) => {
+  try {
+    if(!req.file) return res.status(400).json({ error: 'No file provided' });
+    const contractType = req.body.contract_type || 'contract';
+    const fileName = `${req.companyId}/${contractType}_${Date.now()}.pdf`;
+    const { uploadFile } = require('../lib/storage');
+    const storagePath = await uploadFile('contracts', fileName, req.file.buffer, 'application/pdf');
+    const { supabaseAdmin } = require('../lib/supabase');
+    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
+    res.json({ success: true, url: urlData.publicUrl, path: storagePath });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /signwell/templates/create — upload PDF and create SignWell template
 router.post('/templates/create', requireAuth, requireRole('owner','builder'), async (req, res) => {
   try {
