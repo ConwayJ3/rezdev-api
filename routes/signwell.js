@@ -64,6 +64,9 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
         { id: '1', placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email },
         { id: '2', placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email },
       ];
+      // Build field data from request body fields object
+      const fieldData = req.body.fields || {};
+      const templateFields = Object.entries(fieldData).map(([api_id, value]) => ({ api_id, value: String(value||'') }));
       swRes = await fetch(SIGNWELL_API+'/document_templates/documents', {
         method: 'POST',
         headers: { 'X-Api-Key': SW_KEY, 'Content-Type': 'application/json' },
@@ -74,6 +77,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
           recipients: templateRecipients,
           reminder_enabled: true,
           apply_signing_order: true,
+          fields: templateFields.length ? [templateFields] : undefined,
         }),
       });
     } else {
