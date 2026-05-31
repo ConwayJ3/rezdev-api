@@ -18,13 +18,28 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
       if(!cErr && c) contract = c;
     }
     
-    // If no contract found, use the request body to create a minimal one
+    // If no contract found, create one in the database
     if(!contract){
-      contract = {
-        id: contract_id,
+      const { data: newContract, error: createErr } = await supabaseAdmin
+        .from('contracts')
+        .insert({
+          project_id:         req.body.project_id || null,
+          title:              req.body.title || contract_type || 'Contract',
+          body:               body || 'Sent via SignWell template',
+          contractor_id:      null,
+          contracted_amount:  req.body.amount || 0,
+          start_date:         req.body.start_date || null,
+          status:             'draft',
+          created_by:         req.userId,
+          contract_type:      contract_type || 'contractor',
+        })
+        .select().single();
+      if(createErr){ console.log('[SignWell] Contract create error:', createErr.message); }
+      contract = newContract || {
+        id: null,
         contract_type: contract_type || 'contractor',
-        body: body || 'Sent via SignWell template',
-        title: contract_type || 'Contract',
+        body: body || '',
+        title: req.body.title || 'Contract',
       };
     }
 
