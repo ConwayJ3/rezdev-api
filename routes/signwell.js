@@ -75,6 +75,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
           template_id: tmplRecord.signwell_template_id,
           name: contract.title || 'RezDev Contract',
           recipients: templateRecipients,
+          embedded_signing: true,
           reminder_enabled: true,
           apply_signing_order: true,
           fields: templateFields.length ? [templateFields] : undefined,
@@ -89,6 +90,7 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
           name: contract.title || 'RezDev Contract',
           text: contract.body || '',
           recipients,
+          embedded_signing: true,
           reminder_enabled: true,
           apply_signing_order: true,
         }),
@@ -97,8 +99,26 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
 
     const swData = await swRes.json();
     if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
-    await supabaseAdmin.from('contracts').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', contract_id);
-    res.json({ success: true, document_id: swData.id });
+
+    // Extract the recipient's embedded signing URL (recipient id '1')
+    let signingUrl = null;
+    if(swData.recipients && Array.isArray(swData.recipients)){
+      const recipient = swData.recipients.find(r => r.id === '1') || swData.recipients[0];
+      signingUrl = recipient ? (recipient.embedded_signing_url || recipient.signing_url) : null;
+    }
+
+    // Update the contract record (use the actual contract.id from DB)
+    const contractDbId = contract.id || contract_id;
+    if(contractDbId && !String(contractDbId).startsWith('temp-')){
+      await supabaseAdmin.from('contracts').update({
+        status: 'sent',
+        sent_at: new Date().toISOString(),
+        signwell_document_id: swData.id,
+        signing_url: signingUrl,
+        recipient_email: signer_email,
+      }).eq('id', contractDbId);
+    }
+    res.json({ success: true, document_id: swData.id, signing_url: signingUrl });
   } catch(e) {
     console.error('[SignWell] Error:', e.message);
     res.status(500).json({ error: e.message });
