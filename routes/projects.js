@@ -5,18 +5,52 @@ const { requireAuth, requireRole, requireProjectAccess } = require('../middlewar
 
 // GET /projects — list all projects for this company
 router.get('/', requireAuth, async (req, res) => {
-  const { data, error } = await req.db
-    .from('projects')
-    .select(`
-      id, project_key, name, address, city, state, status, project_type,
-      beds, baths, livable_sf, total_sf, created_at, updated_at,
-      phases(id, name, status, start_date, end_date, sort_order)
-    `)
-    .eq('company_id', req.companyId)
-    .order('created_at', { ascending: false });
+  try {
+    const role = req.user?.role;
 
-  if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+    // Contractor: only return projects they are assigned to
+    if(role === 'contractor'){
+      const { data: assignments } = await supabaseAdmin
+        .from('project_contractors')
+        .select('project_id')
+        .eq('user_id', req.userId);
+      const projectIds = (assignments||[]).map(a => a.project_id);
+      if(!projectIds.length) return res.json([]);
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
+        .in('id', projectIds)
+        .order('created_at', { ascending: false });
+      if(error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // Client: only return linked projects
+    if(role === 'client'){
+      const { data: linked } = await supabaseAdmin
+        .from('project_clients')
+        .select('project_id')
+        .eq('user_id', req.userId);
+      const projectIds = (linked||[]).map(l => l.project_id);
+      if(!projectIds.length) return res.json([]);
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
+        .in('id', projectIds)
+        .order('created_at', { ascending: false });
+      if(error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // Builder/PM/Owner: return all company projects
+    const { data, error } = await req.db
+      .from('projects')
+      .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
+      .eq('company_id', req.companyId)
+      .order('created_at', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
 // GET /projects/groups — lot groups with members
