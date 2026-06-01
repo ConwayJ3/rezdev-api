@@ -312,4 +312,54 @@ rfpRouter.put('/:id/bids/:bidId', requireAuth, requireRole('owner','builder'), a
   res.json(data);
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter };
+// PROJECT CONTRACTORS
+const pContractorRouter = require('express').Router({ mergeParams: true });
+pContractorRouter.get('/', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('project_contractors').select('*, users(id, first_name, last_name, email)').eq('project_id', req.params.projectId);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+pContractorRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { user_id, trade } = req.body;
+    if(!user_id) return res.status(400).json({ error: 'user_id required' });
+    const { data, error } = await supabaseAdmin.from('project_contractors').upsert({ project_id: req.params.projectId, user_id, trade }, { onConflict: 'project_id,user_id' }).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    await supabaseAdmin.from('project_contractors').delete().eq('project_id', req.params.projectId).eq('user_id', req.params.userId);
+    res.json({ success: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// LIEN WAIVERS
+const lienRouter = require('express').Router({ mergeParams: true });
+lienRouter.get('/', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('lien_waivers').select('*').eq('project_id', req.params.projectId).order('created_at', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+lienRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { contractor_id, contractor_name, amount, waiver_type } = req.body;
+    const { data, error } = await supabaseAdmin.from('lien_waivers').insert({ project_id: req.params.projectId, contractor_id, contractor_name, amount, waiver_type: waiver_type||'conditional', status: 'pending' }).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('lien_waivers').update({ status: 'signed', signed_at: new Date().toISOString() }).eq('id', req.params.id).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter };
