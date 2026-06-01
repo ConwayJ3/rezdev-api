@@ -122,6 +122,38 @@ router.post('/audit-log', requireAuth, async (req, res) => {
   res.status(201).json(data);
 });
 
+// CONTRACTOR BANKING ─────────────────────────────────────────
+router.get('/banking', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('contractor_banking')
+      .select('*')
+      .eq('user_id', req.userId)
+      .single();
+    if(error && error.code !== 'PGRST116') return res.status(400).json({ error: error.message });
+    res.json(data || {});
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.post('/banking', requireAuth, async (req, res) => {
+  try {
+    const { bank_name, account_holder, account_number, routing_number, account_type, ach_same_as_wire, ach_account_number, ach_routing_number } = req.body;
+    const { data, error } = await supabaseAdmin
+      .from('contractor_banking')
+      .upsert({
+        user_id: req.userId,
+        bank_name, account_holder, account_number, routing_number,
+        account_type: account_type || 'checking',
+        ach_same_as_wire: ach_same_as_wire !== false,
+        ach_account_number, ach_routing_number,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
 
 // ── Company routes ────────────────────────────────────
