@@ -17,7 +17,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
@@ -84,6 +84,8 @@ app.use('/projects/:projectId/budget',         budgetRoutes);
 app.use('/projects/:projectId/messages',       messageRoutes);
 app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
+app.use('/projects/:projectId/contractors',    pContractorRouter);
+app.use('/projects/:projectId/lien-waivers',  lienRouter);
 app.use('/projects/:projectId/selections',     selRouter);
 app.use('/projects/:projectId/contracts',      ctrRouter);
 app.use('/projects/:projectId/payments',       payRouter);
