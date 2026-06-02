@@ -44,6 +44,52 @@ router.put('/pm-assignments', requireAuth, requireRole('owner','builder'), async
   res.json({ success: true, assigned: project_ids.length });
 });
 
+// POST /users — create a new user (invite)
+router.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { first_name, last_name, email, role, password } = req.body;
+    if(!email || !role) return res.status(400).json({ error: 'email and role required' });
+
+    // Create auth user in Supabase Auth
+    const tempPassword = password || 'RezDev' + Math.random().toString(36).slice(2,10) + '!';
+    const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password: tempPassword,
+      email_confirm: true,
+    });
+    if(authErr) return res.status(400).json({ error: authErr.message });
+
+    // Create user record
+    const { data, error } = await supabaseAdmin
+      .from('users')
+      .insert({
+        id:         authData.user.id,
+        email,
+        first_name: first_name || '',
+        last_name:  last_name  || '',
+        role,
+        status:     'active',
+        company_id: req.companyId,
+      })
+      .select('id, first_name, last_name, email, role, status, created_at')
+      .single();
+
+    if(error) return res.status(400).json({ error: error.message });
+    res.status(201).json({ ...data, temp_password: tempPassword });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /users/:id — remove a user
+router.delete('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    // Remove from users table
+    await supabaseAdmin.from('users').delete().eq('id', req.params.id).eq('company_id', req.companyId);
+    // Remove auth user
+    await supabaseAdmin.auth.admin.deleteUser(req.params.id);
+    res.json({ success: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // PUT /users/:id — update user profile / role
 router.put('/:id', requireAuth, async (req, res) => {
   const isSelf  = req.params.id === req.userId;
