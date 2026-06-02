@@ -42,6 +42,7 @@ const authLimiter = rateLimit({
 
 app.use('/auth', authLimiter);
 const signwellRouter = require('./routes/signwell');
+const driveRouter    = require('./routes/drive');
 app.use(generalLimiter);
 
 // ── Security & Parsing ────────────────────────────────────────────
@@ -86,6 +87,7 @@ app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
 app.use('/projects/:projectId/contractors',    pContractorRouter);
 app.use('/projects/:projectId/lien-waivers',  lienRouter);
+app.use('/drive', driveRouter);
 app.use('/projects/:projectId/selections',     selRouter);
 app.use('/projects/:projectId/contracts',      ctrRouter);
 app.use('/projects/:projectId/payments',       payRouter);
