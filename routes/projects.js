@@ -45,10 +45,19 @@ router.get('/', requireAuth, async (req, res) => {
     // Builder/PM/Owner: return all company projects
     const { data, error } = await req.db
       .from('projects')
-      .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
+      .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
       .eq('company_id', req.companyId)
       .order('created_at', { ascending: false });
     if(error) return res.status(400).json({ error: error.message });
+
+    // Attach group names for grouped projects
+    const groupIds = [...new Set((data||[]).map(p => p.group_id).filter(Boolean))];
+    if(groupIds.length){
+      const { data: groups } = await supabaseAdmin.from('lot_groups').select('id, name').in('id', groupIds);
+      const groupMap = {};
+      (groups||[]).forEach(g => { groupMap[g.id] = g.name; });
+      (data||[]).forEach(p => { if(p.group_id) p.group_name = groupMap[p.group_id]; });
+    }
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
@@ -99,6 +108,7 @@ router.post('/groups', requireAuth, requireRole('owner','builder'), async (req, 
           address:      lot.address || '',
           status:       'planning',
           created_by:   req.userId,
+          group_id:     group.id,
         })
         .select()
         .single();
