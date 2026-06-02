@@ -154,4 +154,15 @@ router.post('/:id/score/compute', requireAuth, requireRole('owner','builder','pm
   res.json(data);
 });
 
+// DELETE /contractors/:id
+router.delete('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { error } = await supabaseAdmin
+    .from('contractors')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('company_id', req.companyId);
+  if(error) return res.status(400).json({ error: error.message });
+  res.json({ success: true });
+});
+
 module.exports = router;
