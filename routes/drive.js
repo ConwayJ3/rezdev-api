@@ -49,6 +49,20 @@ router.post('/folders', requireAuth, requireRole('owner','builder','pm'), async 
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// PUT /drive/folders/:id
+router.put('/folders/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { name, visibility, allowed_roles } = req.body;
+    const updates = {};
+    if(name) updates.name = name;
+    if(visibility) updates.visibility = visibility;
+    if(allowed_roles) updates.allowed_roles = allowed_roles;
+    const { data, error } = await supabaseAdmin.from('drive_folders').update(updates).eq('id', req.params.id).eq('company_id', req.companyId).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /drive/folders/:id
 router.delete('/folders/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
   try {
