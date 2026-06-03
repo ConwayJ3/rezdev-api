@@ -498,6 +498,10 @@ delayRouter.post('/', requireAuth, async (req, res) => {
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
 });
+delayRouter.delete('/:id', requireAuth, async (req, res) => {
+  await supabaseAdmin.from('delay_log').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
+  res.json({ success: true });
+});
 
 // CLOSING COSTS ────────────────────────────────────────────
 const closingRouter = require('express').Router({ mergeParams: true });
@@ -512,6 +516,12 @@ closingRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async 
   const { data, error } = await supabaseAdmin.from('closing_costs').insert({ project_id: req.params.projectId, label, amount: amount||0, category: category||'other', notes: notes||'' }).select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
+});
+closingRouter.put('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const { amount, notes } = req.body;
+  const { data, error } = await supabaseAdmin.from('closing_costs').update({ amount: amount||0, notes: notes||'' }).eq('id', req.params.id).eq('project_id', req.params.projectId).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
 });
 closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   await supabaseAdmin.from('closing_costs').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
