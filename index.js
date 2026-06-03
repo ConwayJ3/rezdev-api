@@ -87,6 +87,7 @@ app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
 app.use('/projects/:projectId/contractors',    pContractorRouter);
 app.use('/projects/:projectId/lien-waivers',  lienRouter);
+app.use('/rfp', publicRfpRouter);
 app.use('/drive', driveRouter);
 app.use('/projects/:projectId/selections',     selRouter);
 app.use('/projects/:projectId/contracts',      ctrRouter);

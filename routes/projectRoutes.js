@@ -287,9 +287,11 @@ rfpRouter.get('/', requireAuth, async (req, res) => {
 });
 
 rfpRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
-  const { project_id, title, trade, description, scope, due_date, budget_range, is_public } = req.body;
+  const { project_id, title, trade, description, scope, due_date, deadline, budget_range, is_public } = req.body;
+  const crypto = require('crypto');
+  const public_token = crypto.randomBytes(16).toString('hex');
   const { data, error } = await supabaseAdmin.from('rfps')
-    .insert({ company_id: req.companyId, project_id, title, trade, description, scope, due_date, budget_range, is_public: is_public||false, created_by: req.userId })
+    .insert({ company_id: req.companyId, project_id, title, trade, description, scope, due_date, deadline: deadline||due_date, budget_range, is_public: is_public||false, created_by: req.userId, public_token, status: 'open' })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
@@ -362,4 +364,34 @@ lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter };
+// PUBLIC endpoint — no auth required — lookup RFP by token
+const publicRfpRouter = require('express').Router();
+publicRfpRouter.get('/:token', async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rfps')
+      .select('id, title, trade, description, scope, deadline, budget_range, status, project_id, company_id, rfp_bids(id)')
+      .eq('public_token', req.params.token)
+      .single();
+    if(error || !data) return res.status(404).json({ error: 'RFP not found' });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+publicRfpRouter.post('/:token/bid', async (req, res) => {
+  try {
+    const { data: rfp } = await supabaseAdmin.from('rfps').select('id, status, deadline').eq('public_token', req.params.token).single();
+    if(!rfp) return res.status(404).json({ error: 'RFP not found' });
+    if(rfp.status !== 'open') return res.status(400).json({ error: 'RFP is no longer accepting bids' });
+    if(rfp.deadline && new Date(rfp.deadline) < new Date()) return res.status(400).json({ error: 'Bid deadline has passed' });
+    const { contractor_name, company_name, email, phone, trade, amount, timeline_days, notes } = req.body;
+    if(!contractor_name || !email) return res.status(400).json({ error: 'name and email required' });
+    const { data, error } = await supabaseAdmin.from('rfp_bids')
+      .insert({ rfp_id: rfp.id, contractor_name, company_name, email, phone, trade, amount, timeline_days, notes, submitted_at: new Date().toISOString() })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.status(201).json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter };
