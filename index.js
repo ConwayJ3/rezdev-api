@@ -17,7 +17,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
