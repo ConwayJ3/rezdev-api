@@ -421,7 +421,7 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter };
+// exports moved to end of file
 
 // GC DRAWS ─────────────────────────────────────────────────
 const gcDrawRouter = require('express').Router({ mergeParams: true });
@@ -517,3 +517,5 @@ closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), a
   await supabaseAdmin.from('closing_costs').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
   res.json({ success: true });
 });
+
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter };
