@@ -364,6 +364,33 @@ lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// PM TEMPLATES ────────────────────────────────────────────
+const tmplRouter = require('express').Router();
+tmplRouter.get('/', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('pm_templates').select('*').eq('company_id', req.companyId).order('created_at');
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+tmplRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { name, description, icon, phase_data } = req.body;
+    if(!name) return res.status(400).json({ error: 'name required' });
+    const { data, error } = await supabaseAdmin.from('pm_templates')
+      .insert({ company_id: req.companyId, name, description, icon: icon||'📋', phase_data: phase_data||[], created_by: req.userId })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.status(201).json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+tmplRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    await supabaseAdmin.from('pm_templates').delete().eq('id', req.params.id).eq('company_id', req.companyId);
+    res.json({ success: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // PUBLIC endpoint — no auth required — lookup RFP by token
 const publicRfpRouter = require('express').Router();
 publicRfpRouter.get('/:token', async (req, res) => {
@@ -394,4 +421,4 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter };
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter };
