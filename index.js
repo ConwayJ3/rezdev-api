@@ -17,7 +17,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
@@ -87,6 +87,14 @@ app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
 app.use('/projects/:projectId/contractors',    pContractorRouter);
 app.use('/projects/:projectId/lien-waivers',  lienRouter);
+app.use('/rfp',                               publicRfpRouter);
+app.use('/pm-templates',                      tmplRouter);
+app.use('/drive',                             require('./routes/drive'));
+app.use('/projects/:projectId/gc-draws',      gcDrawRouter);
+app.use('/projects/:projectId/inspections',   inspRouter);
+app.use('/projects/:projectId/investments',   invRouter);
+app.use('/projects/:projectId/delays',        delayRouter);
+app.use('/projects/:projectId/closing-costs', closingRouter);
 app.use('/rfp', publicRfpRouter);
 app.use('/drive', driveRouter);
 app.use('/projects/:projectId/selections',     selRouter);
