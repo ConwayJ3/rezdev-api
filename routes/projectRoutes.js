@@ -421,4 +421,99 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter };
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter };
+
+// GC DRAWS ─────────────────────────────────────────────────
+const gcDrawRouter = require('express').Router({ mergeParams: true });
+gcDrawRouter.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('gc_draws').select('*').eq('project_id', req.params.projectId).order('created_at');
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+gcDrawRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const { label, amount, due_date, notes } = req.body;
+  if(!label) return res.status(400).json({ error: 'label required' });
+  const { data, error } = await supabaseAdmin.from('gc_draws').insert({ project_id: req.params.projectId, label, amount: amount||0, due_date: due_date||null, notes: notes||'' }).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+gcDrawRouter.put('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const allowed = ['label','amount','due_date','notes','status','paid_date'];
+  const updates = {};
+  allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
+  const { data, error } = await supabaseAdmin.from('gc_draws').update(updates).eq('id', req.params.id).eq('project_id', req.params.projectId).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+gcDrawRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  await supabaseAdmin.from('gc_draws').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
+  res.json({ success: true });
+});
+
+// INSPECTIONS ──────────────────────────────────────────────
+const inspRouter = require('express').Router({ mergeParams: true });
+inspRouter.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('project_inspections').select('*').eq('project_id', req.params.projectId);
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+inspRouter.post('/', requireAuth, async (req, res) => {
+  const { phase_id, task_idx, result, notes } = req.body;
+  const { data, error } = await supabaseAdmin.from('project_inspections')
+    .upsert({ project_id: req.params.projectId, phase_id, task_idx, result, notes: notes||'', inspected_by: req.userId, inspected_at: new Date().toISOString() }, { onConflict: 'project_id,phase_id,task_idx' })
+    .select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// INVESTMENTS ──────────────────────────────────────────────
+const invRouter = require('express').Router({ mergeParams: true });
+invRouter.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('project_investments').select('*').eq('project_id', req.params.projectId).order('created_at');
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+invRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { investor, amount, equity_pct, notes, invested_at } = req.body;
+  if(!investor) return res.status(400).json({ error: 'investor required' });
+  const { data, error } = await supabaseAdmin.from('project_investments').insert({ project_id: req.params.projectId, investor, amount: amount||0, equity_pct: equity_pct||0, notes: notes||'', invested_at: invested_at||null }).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+invRouter.delete('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  await supabaseAdmin.from('project_investments').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
+  res.json({ success: true });
+});
+
+// DELAY LOG ────────────────────────────────────────────────
+const delayRouter = require('express').Router({ mergeParams: true });
+delayRouter.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('delay_log').select('*').eq('project_id', req.params.projectId).order('logged_at', { ascending: false });
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+delayRouter.post('/', requireAuth, async (req, res) => {
+  const { phase_id, contractor, reason, days_delayed } = req.body;
+  const { data, error } = await supabaseAdmin.from('delay_log').insert({ project_id: req.params.projectId, phase_id, contractor, reason, days_delayed: days_delayed||0 }).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// CLOSING COSTS ────────────────────────────────────────────
+const closingRouter = require('express').Router({ mergeParams: true });
+closingRouter.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('closing_costs').select('*').eq('project_id', req.params.projectId).order('created_at');
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+closingRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const { label, amount, category, notes } = req.body;
+  if(!label) return res.status(400).json({ error: 'label required' });
+  const { data, error } = await supabaseAdmin.from('closing_costs').insert({ project_id: req.params.projectId, label, amount: amount||0, category: category||'other', notes: notes||'' }).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  await supabaseAdmin.from('closing_costs').delete().eq('id', req.params.id).eq('project_id', req.params.projectId);
+  res.json({ success: true });
+});
