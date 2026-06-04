@@ -89,6 +89,7 @@ app.use('/projects/:projectId/contractors',    pContractorRouter);
 app.use('/projects/:projectId/lien-waivers',  lienRouter);
 app.use('/rfp',                               publicRfpRouter);
 app.use('/pm-templates',                      tmplRouter);
+app.use('/integrations/quickbooks',           require('./routes/quickbooks'));
 app.use('/drive',                             require('./routes/drive'));
 app.use('/projects/:projectId/gc-draws',      gcDrawRouter);
 app.use('/projects/:projectId/inspections',   inspRouter);
