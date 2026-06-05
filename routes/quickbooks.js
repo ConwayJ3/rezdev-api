@@ -106,6 +106,115 @@ function frontendReturn(status, detail){
   return url;
 }
 
+// ─── Helper: call the QuickBooks API with a valid token ────
+async function qbApiCall(companyId, method, path, body){
+  const tok = await getValidToken(companyId);
+  if(!tok) throw new Error('QuickBooks not connected');
+  const url = QB_API_BASE + '/v3/company/' + tok.realmId + path;
+  const opts = {
+    method,
+    headers: {
+      'Authorization': 'Bearer ' + tok.accessToken,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  };
+  if(body) opts.body = JSON.stringify(body);
+  const resp = await fetch(url, opts);
+  const text = await resp.text();
+  let json; try { json = JSON.parse(text); } catch(e){ json = { raw: text }; }
+  if(!resp.ok){
+    const err = new Error('QB API error: ' + resp.status);
+    err.detail = json; err.status = resp.status;
+    throw err;
+  }
+  return json;
+}
+
+// ─── GET /integrations/quickbooks/customers ────────────────
+// List all Customers from the connected QB company
+router.get('/customers', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const q = encodeURIComponent('SELECT * FROM Customer MAXRESULTS 1000');
+    const data = await qbApiCall(req.companyId, 'GET', '/query?query=' + q);
+    const customers = (data.QueryResponse && data.QueryResponse.Customer) || [];
+    res.json(customers.map(c => ({
+      id: c.Id, name: c.DisplayName || c.CompanyName || c.FullyQualifiedName,
+      active: c.Active, balance: c.Balance,
+    })));
+  } catch(e){
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail });
+  }
+});
+
+// ─── GET /integrations/quickbooks/mappings ─────────────────
+// List this company's projects and their QB customer mapping
+router.get('/mappings', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const { data: projects } = await supabaseAdmin.from('projects')
+    .select('id, name, address, city, state').eq('company_id', req.companyId);
+  const { data: maps } = await supabaseAdmin.from('quickbooks_customer_map')
+    .select('project_id, qb_customer_id, qb_customer_name').eq('company_id', req.companyId);
+  const mapByProject = {};
+  (maps || []).forEach(m => { mapByProject[m.project_id] = m; });
+  res.json((projects || []).map(p => ({
+    project_id: p.id,
+    project_name: p.name || p.address,
+    address: [p.address, p.city, p.state].filter(Boolean).join(', '),
+    qb_customer_id: mapByProject[p.id]?.qb_customer_id || null,
+    qb_customer_name: mapByProject[p.id]?.qb_customer_name || null,
+  })));
+});
+
+// ─── POST /integrations/quickbooks/mappings ────────────────
+// Link a project to an existing QB customer
+router.post('/mappings', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { project_id, qb_customer_id, qb_customer_name } = req.body;
+  if(!project_id || !qb_customer_id) return res.status(400).json({ error: 'project_id and qb_customer_id required' });
+  const { data, error } = await supabaseAdmin.from('quickbooks_customer_map').upsert({
+    company_id: req.companyId, project_id, qb_customer_id, qb_customer_name: qb_customer_name || null,
+  }, { onConflict: 'project_id' }).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// ─── DELETE /integrations/quickbooks/mappings/:projectId ───
+router.delete('/mappings/:projectId', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  await supabaseAdmin.from('quickbooks_customer_map').delete()
+    .eq('company_id', req.companyId).eq('project_id', req.params.projectId);
+  res.json({ success: true });
+});
+
+// ─── POST /integrations/quickbooks/customers/create ────────
+// Create a new QB customer from a RezDev project, then map it
+router.post('/customers/create', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { project_id } = req.body;
+  if(!project_id) return res.status(400).json({ error: 'project_id required' });
+  const { data: proj } = await supabaseAdmin.from('projects')
+    .select('id, name, address, city, state, zip').eq('id', project_id).eq('company_id', req.companyId).single();
+  if(!proj) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const displayName = proj.name || proj.address || ('Project ' + project_id.slice(0,8));
+    const customerBody = {
+      DisplayName: displayName,
+      CompanyName: displayName,
+    };
+    if(proj.address){
+      customerBody.BillAddr = {
+        Line1: proj.address, City: proj.city || '', CountrySubDivisionCode: proj.state || '', PostalCode: proj.zip || '',
+      };
+    }
+    const created = await qbApiCall(req.companyId, 'POST', '/customer', customerBody);
+    const qbCust = created.Customer;
+    await supabaseAdmin.from('quickbooks_customer_map').upsert({
+      company_id: req.companyId, project_id,
+      qb_customer_id: qbCust.Id, qb_customer_name: qbCust.DisplayName,
+    }, { onConflict: 'project_id' });
+    res.status(201).json({ qb_customer_id: qbCust.Id, qb_customer_name: qbCust.DisplayName });
+  } catch(e){
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail });
+  }
+});
+
 // ─── Token refresh helper (exported for use by sync/webhook) ──
 async function getValidToken(companyId){
   const { data: row } = await supabaseAdmin.from('quickbooks_tokens')
@@ -144,5 +253,6 @@ async function getValidToken(companyId){
 }
 
 router.getValidToken = getValidToken;
+router.qbApiCall = qbApiCall;
 router.QB_API_BASE = QB_API_BASE;
 module.exports = router;
