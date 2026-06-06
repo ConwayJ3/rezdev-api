@@ -320,10 +320,24 @@ router.post('/items/setup', requireAuth, requireRole('owner','builder'), async (
             Type: 'Service',
             IncomeAccountRef: { value: acctId },
             ExpenseAccountRef: { value: acctId },
+            PurchaseCost: 0,
+            PurchaseDesc: li.name.slice(0, 100),
           });
           qbItem = createdItem.Item;
           created++;
         } else {
+          // Update existing item to ensure purchase fields are set
+          const updated = await qbApiCall(req.companyId, 'POST', '/item', {
+            Id: qbItem.Id,
+            SyncToken: qbItem.SyncToken,
+            Name: qbItem.Name,
+            Type: 'Service',
+            IncomeAccountRef: { value: acctId },
+            ExpenseAccountRef: { value: acctId },
+            PurchaseCost: qbItem.PurchaseCost || 0,
+            PurchaseDesc: qbItem.PurchaseDesc || qbItem.Name,
+          });
+          qbItem = updated.Item || qbItem;
           linked++;
         }
 
