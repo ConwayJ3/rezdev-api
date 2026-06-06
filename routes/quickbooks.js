@@ -343,6 +343,185 @@ router.post('/items/setup', requireAuth, requireRole('owner','builder'), async (
   }
 });
 
+// ─── POST /integrations/quickbooks/webhook ─────────────────
+// Intuit calls this when transactions are created/updated in QB.
+// No requireAuth — verified by Intuit-Webhook-Signature-Token header instead.
+router.post('/webhook', async (req, res) => {
+  // Verify the webhook token
+  const token = req.headers['intuit-webhook-signature-token'] || req.headers['intuit-signature'];
+  const webhookToken = process.env.QB_WEBHOOK_TOKEN;
+  if(webhookToken && token !== webhookToken){
+    console.warn('[QB Webhook] Invalid signature token');
+    return res.status(401).json({ error: 'Invalid webhook token' });
+  }
+
+  // Acknowledge immediately — Intuit requires a 200 within 10 seconds
+  res.status(200).json({ received: true });
+
+  // Process events asynchronously
+  try {
+    const payload = req.body;
+    const eventNotifications = payload.eventNotifications || [];
+
+    for(const notification of eventNotifications){
+      const realmId = notification.realmId;
+      const entities = (notification.dataChangeEvent && notification.dataChangeEvent.entities) || [];
+
+      // Find which company owns this realm
+      const { data: tokenRow } = await supabaseAdmin.from('quickbooks_tokens')
+        .select('company_id').eq('realm_id', realmId).single();
+      if(!tokenRow){ console.warn('[QB Webhook] Unknown realmId:', realmId); continue; }
+      const companyId = tokenRow.company_id;
+
+      for(const entity of entities){
+        const entityType = entity.name;
+        const entityId   = entity.id;
+        const operation  = entity.operation; // Create, Update, Delete, Merge, Void
+
+        if(operation === 'Delete' || operation === 'Void') continue;
+        if(!['Purchase','Bill','Invoice'].includes(entityType)) continue;
+
+        try {
+          await processQBEntity(companyId, realmId, entityType, entityId);
+        } catch(e){
+          console.error('[QB Webhook] Error processing entity:', entityType, entityId, e.message);
+        }
+      }
+    }
+  } catch(e){
+    console.error('[QB Webhook] Processing error:', e);
+  }
+});
+
+// ─── Process a single QB entity ───────────────────────────
+async function processQBEntity(companyId, realmId, entityType, entityId){
+  // Fetch the full entity from QB
+  const entity = await qbApiCall(companyId, 'GET', '/' + entityType.toLowerCase() + '/' + entityId);
+  const obj = entity[entityType];
+  if(!obj) return;
+
+  // Load item and customer maps for this company
+  const { data: itemMaps } = await supabaseAdmin.from('quickbooks_item_map')
+    .select('qb_item_id, section_id, line_item_name').eq('company_id', companyId);
+  const { data: customerMaps } = await supabaseAdmin.from('quickbooks_customer_map')
+    .select('qb_customer_id, project_id').eq('company_id', companyId);
+
+  const itemById    = {};
+  const projectByCustomer = {};
+  (itemMaps || []).forEach(m => { itemById[m.qb_item_id] = m; });
+  (customerMaps || []).forEach(m => { projectByCustomer[m.qb_customer_id] = m.project_id; });
+
+  if(entityType === 'Purchase'){
+    await processPurchase(obj, companyId, itemById, projectByCustomer);
+  } else if(entityType === 'Bill'){
+    await processBill(obj, companyId, itemById, projectByCustomer);
+  } else if(entityType === 'Invoice'){
+    await processInvoice(obj, companyId, itemById, projectByCustomer);
+  }
+}
+
+// ─── Process a QB Purchase (card swipe / expense) ─────────
+async function processPurchase(obj, companyId, itemById, projectByCustomer){
+  const lines = obj.Line || [];
+  const txnDate = obj.TxnDate;
+  const payee = (obj.EntityRef && obj.EntityRef.name) || obj.PaymentMethodRef?.name || 'QuickBooks';
+  const memo = obj.PrivateNote || obj.Memo || '';
+  const qbTxnId = 'qb-purchase-' + obj.Id;
+
+  for(const line of lines){
+    if(!line.Amount || line.Amount <= 0) continue;
+
+    // Get item ref
+    const itemRef = line.ItemBasedExpenseLineDetail?.ItemRef
+      || line.AccountBasedExpenseLineDetail?.AccountRef;
+    if(!itemRef) continue;
+    const itemId  = itemRef.value;
+    const itemMap = itemById[itemId];
+
+    // Get customer ref
+    const custRef = line.ItemBasedExpenseLineDetail?.CustomerRef
+      || line.AccountBasedExpenseLineDetail?.CustomerRef;
+    if(!custRef) continue;
+    const projectId = projectByCustomer[custRef.value];
+    if(!projectId) continue;
+
+    // Map to section_id — fallback to misc if item not mapped
+    const sectionId  = itemMap ? itemMap.section_id : 'misc';
+    const lineItem   = itemMap ? itemMap.line_item_name : 'Miscellaneous';
+
+    // Check if already imported (avoid duplicates)
+    const { data: existing } = await supabaseAdmin.from('transactions')
+      .select('id').eq('project_id', projectId).eq('notes', qbTxnId + '-line-' + line.LineNum).single();
+    if(existing) continue;
+
+    await supabaseAdmin.from('transactions').insert({
+      project_id: projectId,
+      section_id: sectionId,
+      item_name:  lineItem,
+      amount:     parseFloat(line.Amount),
+      payee:      payee,
+      txn_date:   txnDate,
+      notes:      (memo ? memo + ' · ' : '') + qbTxnId + '-line-' + line.LineNum,
+    });
+    console.log('[QB Webhook] Purchase imported:', lineItem, '$'+line.Amount, 'project:', projectId);
+  }
+}
+
+// ─── Process a QB Bill (contractor bill) ──────────────────
+async function processBill(obj, companyId, itemById, projectByCustomer){
+  const lines = obj.Line || [];
+  const txnDate = obj.TxnDate;
+  const payee = (obj.VendorRef && obj.VendorRef.name) || 'Contractor';
+  const qbTxnId = 'qb-bill-' + obj.Id;
+
+  for(const line of lines){
+    if(!line.Amount || line.Amount <= 0) continue;
+    const itemRef = line.ItemBasedExpenseLineDetail?.ItemRef;
+    const custRef = line.ItemBasedExpenseLineDetail?.CustomerRef;
+    if(!custRef) continue;
+    const projectId = projectByCustomer[custRef.value];
+    if(!projectId) continue;
+
+    const itemMap  = itemRef ? itemById[itemRef.value] : null;
+    const sectionId = itemMap ? itemMap.section_id : 'misc';
+    const lineItem  = itemMap ? itemMap.line_item_name : 'Miscellaneous';
+
+    const { data: existing } = await supabaseAdmin.from('transactions')
+      .select('id').eq('project_id', projectId).eq('notes', qbTxnId + '-line-' + line.LineNum).single();
+    if(existing) continue;
+
+    await supabaseAdmin.from('transactions').insert({
+      project_id: projectId, section_id: sectionId, item_name: lineItem,
+      amount: parseFloat(line.Amount), payee, txn_date: txnDate,
+      notes: qbTxnId + '-line-' + line.LineNum,
+    });
+    console.log('[QB Webhook] Bill imported:', lineItem, '$'+line.Amount, 'project:', projectId);
+  }
+}
+
+// ─── Process a QB Invoice ──────────────────────────────────
+async function processInvoice(obj, companyId, itemById, projectByCustomer){
+  // Invoices represent income — we log them separately for now
+  const custRef = obj.CustomerRef;
+  if(!custRef) return;
+  const projectId = projectByCustomer[custRef.value];
+  if(!projectId) return;
+  const totalAmt = parseFloat(obj.TotalAmt) || 0;
+  const txnDate  = obj.TxnDate;
+  const qbTxnId  = 'qb-invoice-' + obj.Id;
+
+  const { data: existing } = await supabaseAdmin.from('transactions')
+    .select('id').eq('project_id', projectId).eq('notes', qbTxnId).single();
+  if(existing) return;
+
+  // Log as a negative transaction (income reduces net cost)
+  await supabaseAdmin.from('transactions').insert({
+    project_id: projectId, section_id: 'income', item_name: 'Client Invoice',
+    amount: -totalAmt, payee: custRef.name || 'Client', txn_date: txnDate, notes: qbTxnId,
+  });
+  console.log('[QB Webhook] Invoice imported: $'+totalAmt, 'project:', projectId);
+}
+
 // ─── Token refresh helper (exported for use by sync/webhook) ──
 async function getValidToken(companyId){
   const { data: row } = await supabaseAdmin.from('quickbooks_tokens')
