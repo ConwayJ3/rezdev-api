@@ -215,6 +215,134 @@ router.post('/customers/create', requireAuth, requireRole('owner','builder'), as
   }
 });
 
+// ─── The canonical RezDev budget line items ────────────────
+const REZDEV_LINE_ITEMS = [
+  { section_id:'soft',   section_title:'Soft Costs',       name:'Permits' },
+  { section_id:'soft',   section_title:'Soft Costs',       name:'Plans' },
+  { section_id:'soft',   section_title:'Soft Costs',       name:'Boundary Survey' },
+  { section_id:'soft',   section_title:'Soft Costs',       name:'Form Board Survey' },
+  { section_id:'site',   section_title:'Site Development',  name:'Water Tap' },
+  { section_id:'site',   section_title:'Site Development',  name:'Sewer Tap' },
+  { section_id:'site',   section_title:'Site Development',  name:'Fill Dirt' },
+  { section_id:'site',   section_title:'Site Development',  name:'Clearing' },
+  { section_id:'meps',   section_title:'MEPS',             name:'Plumbing' },
+  { section_id:'meps',   section_title:'MEPS',             name:'Electrical' },
+  { section_id:'meps',   section_title:'MEPS',             name:'HVAC' },
+  { section_id:'struct', section_title:'Structure',        name:'Foundation' },
+  { section_id:'struct', section_title:'Structure',        name:'Framing Materials' },
+  { section_id:'struct', section_title:'Structure',        name:'Framing Labor' },
+  { section_id:'struct', section_title:'Structure',        name:'Siding Materials' },
+  { section_id:'struct', section_title:'Structure',        name:'Brick Masonry' },
+  { section_id:'struct', section_title:'Structure',        name:'Roof / Gutters' },
+  { section_id:'struct', section_title:'Structure',        name:'Insulation' },
+  { section_id:'struct', section_title:'Structure',        name:'Drywall' },
+  { section_id:'struct', section_title:'Structure',        name:'Paint Interior' },
+  { section_id:'struct', section_title:'Structure',        name:'Paint Exterior' },
+  { section_id:'struct', section_title:'Structure',        name:'Driveway/Flatwork' },
+  { section_id:'struct', section_title:'Structure',        name:'Stairs' },
+  { section_id:'struct', section_title:'Structure',        name:'Cleanup' },
+  { section_id:'sel',    section_title:'Selections',       name:'Ext Doors / Windows' },
+  { section_id:'sel',    section_title:'Selections',       name:'Garage Door' },
+  { section_id:'sel',    section_title:'Selections',       name:'Lighting Fixtures' },
+  { section_id:'sel',    section_title:'Selections',       name:'Trim / Doors - Materials' },
+  { section_id:'sel',    section_title:'Selections',       name:'Trim / Doors - Labor' },
+  { section_id:'sel',    section_title:'Selections',       name:'Cabinets' },
+  { section_id:'sel',    section_title:'Selections',       name:'Countertops' },
+  { section_id:'sel',    section_title:'Selections',       name:'Flooring' },
+  { section_id:'sel',    section_title:'Selections',       name:'Tile - Materials' },
+  { section_id:'sel',    section_title:'Selections',       name:'Tile - Labor' },
+  { section_id:'sel',    section_title:'Selections',       name:'HW / Mirrors / Glass' },
+  { section_id:'sel',    section_title:'Selections',       name:'Appliances' },
+  { section_id:'sel',    section_title:'Selections',       name:'Fences / Landscape' },
+  { section_id:'sel',    section_title:'Selections',       name:'Staging' },
+  { section_id:'sel',    section_title:'Selections',       name:'Misc Interior/Exterior Material/Labor' },
+  { section_id:'misc',   section_title:'Miscellaneous',    name:'Miscellaneous' },
+];
+
+// ─── Ensure the "Job Costs" expense account exists in QB ───
+async function ensureJobCostAccount(companyId){
+  const { data: existing } = await supabaseAdmin.from('quickbooks_account_map')
+    .select('qb_account_id, qb_account_name').eq('company_id', companyId).eq('account_type', 'job_costs').single();
+  if(existing && existing.qb_account_id) return existing.qb_account_id;
+
+  // Check if an account named "Job Costs" already exists in QB
+  const q = encodeURIComponent("SELECT * FROM Account WHERE Name = 'Job Costs'");
+  const found = await qbApiCall(companyId, 'GET', '/query?query=' + q);
+  let acctId;
+  const existingAcct = found.QueryResponse && found.QueryResponse.Account && found.QueryResponse.Account[0];
+  if(existingAcct){
+    acctId = existingAcct.Id;
+  } else {
+    const created = await qbApiCall(companyId, 'POST', '/account', {
+      Name: 'Job Costs',
+      AccountType: 'Cost of Goods Sold',
+      AccountSubType: 'SuppliesMaterialsCogs',
+    });
+    acctId = created.Account.Id;
+  }
+  await supabaseAdmin.from('quickbooks_account_map').upsert({
+    company_id: companyId, account_type: 'job_costs', qb_account_id: acctId, qb_account_name: 'Job Costs',
+  }, { onConflict: 'company_id,account_type' });
+  return acctId;
+}
+
+// ─── GET /integrations/quickbooks/items/status ─────────────
+router.get('/items/status', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const { data } = await supabaseAdmin.from('quickbooks_item_map')
+    .select('line_item_name, qb_item_id').eq('company_id', req.companyId);
+  const mapped = (data || []).filter(d => d.qb_item_id).length;
+  res.json({ total: REZDEV_LINE_ITEMS.length, mapped, complete: mapped >= REZDEV_LINE_ITEMS.length });
+});
+
+// ─── POST /integrations/quickbooks/items/setup ─────────────
+// Creates the Job Costs account + a QB Item for each line item
+router.post('/items/setup', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const acctId = await ensureJobCostAccount(req.companyId);
+    let created = 0, linked = 0, failed = 0;
+    const errors = [];
+
+    for(const li of REZDEV_LINE_ITEMS){
+      // Skip if already mapped
+      const { data: existing } = await supabaseAdmin.from('quickbooks_item_map')
+        .select('qb_item_id').eq('company_id', req.companyId).eq('line_item_name', li.name).single();
+      if(existing && existing.qb_item_id){ linked++; continue; }
+
+      try {
+        // Check if item already exists in QB by name
+        const q = encodeURIComponent("SELECT * FROM Item WHERE Name = '" + li.name.replace(/'/g, "\\'") + "'");
+        const found = await qbApiCall(req.companyId, 'GET', '/query?query=' + q);
+        let qbItem = found.QueryResponse && found.QueryResponse.Item && found.QueryResponse.Item[0];
+
+        if(!qbItem){
+          const createdItem = await qbApiCall(req.companyId, 'POST', '/item', {
+            Name: li.name.slice(0, 100),
+            Type: 'Service',
+            IncomeAccountRef: { value: acctId },
+            ExpenseAccountRef: { value: acctId },
+          });
+          qbItem = createdItem.Item;
+          created++;
+        } else {
+          linked++;
+        }
+
+        await supabaseAdmin.from('quickbooks_item_map').upsert({
+          company_id: req.companyId, section_id: li.section_id, section_title: li.section_title,
+          line_item_name: li.name, qb_item_id: qbItem.Id, qb_item_name: qbItem.Name,
+        }, { onConflict: 'company_id,line_item_name' });
+      } catch(itemErr){
+        failed++;
+        errors.push({ item: li.name, error: itemErr.message, detail: itemErr.detail });
+      }
+    }
+
+    res.json({ success: true, created, linked, failed, errors: errors.slice(0, 5) });
+  } catch(e){
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail });
+  }
+});
+
 // ─── Token refresh helper (exported for use by sync/webhook) ──
 async function getValidToken(companyId){
   const { data: row } = await supabaseAdmin.from('quickbooks_tokens')
@@ -254,5 +382,7 @@ async function getValidToken(companyId){
 
 router.getValidToken = getValidToken;
 router.qbApiCall = qbApiCall;
+router.REZDEV_LINE_ITEMS = REZDEV_LINE_ITEMS;
+router.ensureJobCostAccount = ensureJobCostAccount;
 router.QB_API_BASE = QB_API_BASE;
 module.exports = router;
