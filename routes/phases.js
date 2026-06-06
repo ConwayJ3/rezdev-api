@@ -32,11 +32,11 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
 
 // PUT /projects/:projectId/phases/:id
 router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
-  const { name, status, start_date, end_date, actual_end, notes, sort_order } = req.body;
+  const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress } = req.body;
 
   const { data, error } = await supabaseAdmin
     .from('phases')
-    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, updated_at: new Date().toISOString() })
+    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .eq('project_id', req.params.projectId)
     .select()
@@ -53,7 +53,7 @@ router.put('/', requireAuth, requireRole('owner','builder','pm'), requireProject
 
   const updates = await Promise.all(phases.map(ph =>
     supabaseAdmin.from('phases')
-      .update({ name: ph.name, status: ph.status, start_date: ph.start_date, end_date: ph.end_date, sort_order: ph.sort_order, updated_at: new Date().toISOString() })
+      .update({ name: ph.name, status: ph.status, start_date: ph.start_date, end_date: ph.end_date, sort_order: ph.sort_order, tasks: ph.tasks, completed_tasks: ph.completed_tasks, progress: ph.progress, updated_at: new Date().toISOString() })
       .eq('id', ph.id)
       .eq('project_id', req.params.projectId)
       .select()
