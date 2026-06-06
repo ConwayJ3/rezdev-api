@@ -303,6 +303,45 @@ router.get('/items/status', requireAuth, requireRole('owner','builder','pm'), as
   res.json({ total: REZDEV_LINE_ITEMS.length, mapped, complete: mapped >= REZDEV_LINE_ITEMS.length });
 });
 
+// ─── POST /integrations/quickbooks/items/patch ────────────
+// Force-updates all existing QB items to add PurchaseDesc
+router.post('/items/patch', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const acctId = await ensureJobCostAccount(req.companyId);
+    const { data: maps } = await supabaseAdmin.from('quickbooks_item_map')
+      .select('qb_item_id, line_item_name').eq('company_id', req.companyId);
+    let updated = 0, failed = 0;
+    const errors = [];
+    for(const m of (maps||[])){
+      try {
+        // Fetch current item to get SyncToken
+        const current = await qbApiCall(req.companyId, 'GET', '/item/'+m.qb_item_id);
+        const item = current.Item;
+        if(!item) continue;
+        // Full update with PurchaseDesc
+        await qbApiCall(req.companyId, 'POST', '/item', {
+          Id: item.Id,
+          SyncToken: item.SyncToken,
+          Name: item.Name,
+          Type: 'Service',
+          IncomeAccountRef: { value: acctId },
+          ExpenseAccountRef: { value: acctId },
+          PurchaseCost: 0,
+          PurchaseDesc: item.Name,
+          Description: item.Name,
+        });
+        updated++;
+      } catch(e){
+        failed++;
+        errors.push({ item: m.line_item_name, error: e.message });
+      }
+    }
+    res.json({ success: true, updated, failed, errors: errors.slice(0,5) });
+  } catch(e){
+    res.status(e.status||500).json({ error: e.message });
+  }
+});
+
 // ─── POST /integrations/quickbooks/items/setup ─────────────
 // Creates the Job Costs account + a QB Item for each line item
 router.post('/items/setup', requireAuth, requireRole('owner','builder'), async (req, res) => {
