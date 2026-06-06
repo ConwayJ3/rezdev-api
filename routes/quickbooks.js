@@ -131,6 +131,15 @@ async function qbApiCall(companyId, method, path, body){
   return json;
 }
 
+// ─── GET /integrations/quickbooks/debug/item/:name ────────
+router.get('/debug/item/:name', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const q = encodeURIComponent("SELECT * FROM Item WHERE Name = '" + req.params.name + "'");
+    const data = await qbApiCall(req.companyId, 'GET', '/query?query=' + q);
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message, detail: e.detail }); }
+});
+
 // ─── GET /integrations/quickbooks/customers ────────────────
 // List all Customers from the connected QB company
 router.get('/customers', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
