@@ -32,11 +32,11 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
 
 // PUT /projects/:projectId/phases/:id
 router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
-  const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress } = req.body;
+  const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor } = req.body;
 
   const { data, error } = await supabaseAdmin
     .from('phases')
-    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, updated_at: new Date().toISOString() })
+    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .eq('project_id', req.params.projectId)
     .select()
