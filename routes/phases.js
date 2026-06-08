@@ -17,12 +17,12 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 
 // POST /projects/:projectId/phases
 router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
-  const { name, status, start_date, end_date, notes, sort_order } = req.body;
+  const { name, status, start_date, end_date, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor } = req.body;
   if(!name) return res.status(400).json({ error: 'Phase name required' });
 
   const { data, error } = await supabaseAdmin
     .from('phases')
-    .insert({ project_id: req.params.projectId, name, status: status||'pending', start_date, end_date, notes, sort_order: sort_order||0 })
+    .insert({ project_id: req.params.projectId, name, status: status||'pending', start_date, end_date, notes, sort_order: sort_order||0, tasks: tasks||[], completed_tasks: completed_tasks||[], progress: progress||0, days: days||7, color: color||'#128995', simultaneous: simultaneous||false, assignee: assignee||'', contractor: contractor||'' })
     .select()
     .single();
 
