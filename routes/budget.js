@@ -105,12 +105,23 @@ router.post('/transactions', requireAuth, requireRole('owner','builder','pm'), r
     if(isUuid){
       sectionUuid = section_id;
     } else {
-      const { data: secRow } = await supabaseAdmin
+      let { data: secRow } = await supabaseAdmin
         .from('budget_sections')
         .select('id')
         .eq('project_id', req.params.projectId)
         .eq('section_id', section_id)
         .maybeSingle();
+      if(!secRow){
+        const labelMap = { soft:'Soft Costs', site:'Site Costs', meps:'MEPs', struct:'Structure', sel:'Selections', misc:'Miscellaneous' };
+        const { data: created, error: createErr } = await supabaseAdmin
+          .from('budget_sections')
+          .upsert({ project_id: req.params.projectId, section_id, label: labelMap[section_id] || section_id, icon: '', budget_amount: 0, sort_order: 0 },
+            { onConflict: 'project_id,section_id' })
+          .select('id')
+          .single();
+        if(createErr) console.error('Section auto-create failed:', createErr.message);
+        secRow = created;
+      }
       sectionUuid = secRow ? secRow.id : null;
     }
   }
