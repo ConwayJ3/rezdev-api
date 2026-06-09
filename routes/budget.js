@@ -128,7 +128,7 @@ router.post('/transactions', requireAuth, requireRole('owner','builder','pm'), r
 
   const { data, error } = await supabaseAdmin
     .from('transactions')
-    .insert({ project_id: req.params.projectId, section_id: sectionUuid, item_name, amount, payee, txn_date, notes, created_by: req.userId })
+    .insert({ project_id: req.params.projectId, section_id: sectionUuid, item_name, amount, payee, txn_date: txn_date || null, notes, created_by: req.userId })
     .select()
     .single();
 
@@ -142,7 +142,7 @@ router.put('/transactions/:id', requireAuth, requireRole('owner','builder','pm')
 
   const { data, error } = await supabaseAdmin
     .from('transactions')
-    .update({ item_name, amount, payee, txn_date, notes })
+    .update({ item_name, amount, payee, txn_date: txn_date || null, notes })
     .eq('id', req.params.id)
     .eq('project_id', req.params.projectId)
     .select()
