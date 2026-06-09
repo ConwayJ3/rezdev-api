@@ -97,9 +97,27 @@ router.post('/transactions', requireAuth, requireRole('owner','builder','pm'), r
   const { section_id, item_name, amount, payee, txn_date, notes } = req.body;
   if(!amount) return res.status(400).json({ error: 'amount required' });
 
+  // section_id from frontend is a text key like 'soft' — resolve to budget_sections UUID
+  let sectionUuid = null;
+  if(section_id){
+    // If it's already a UUID, use as-is; otherwise look up by text key
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(section_id);
+    if(isUuid){
+      sectionUuid = section_id;
+    } else {
+      const { data: secRow } = await supabaseAdmin
+        .from('budget_sections')
+        .select('id')
+        .eq('project_id', req.params.projectId)
+        .eq('section_id', section_id)
+        .maybeSingle();
+      sectionUuid = secRow ? secRow.id : null;
+    }
+  }
+
   const { data, error } = await supabaseAdmin
     .from('transactions')
-    .insert({ project_id: req.params.projectId, section_id, item_name, amount, payee, txn_date, notes, created_by: req.userId })
+    .insert({ project_id: req.params.projectId, section_id: sectionUuid, item_name, amount, payee, txn_date, notes, created_by: req.userId })
     .select()
     .single();
 
