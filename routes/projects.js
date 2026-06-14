@@ -217,9 +217,44 @@ router.post('/:id/clients', requireAuth, requireRole('owner','builder'), async (
   const { client_name, email, phone } = req.body;
   if(!client_name) return res.status(400).json({ error: 'Client name required' });
 
+  // Look up the client user by email so portal access (requireProjectAccess) works
+  let userId = null;
+  if(email){
+    const { data: userRow } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .eq('role', 'client')
+      .maybeSingle();
+    userId = userRow ? userRow.id : null;
+  }
+
+  // Dedup: if this client (by email) is already linked to the project, update instead of inserting
+  let existing = null;
+  if(email){
+    const { data: existRow } = await supabaseAdmin
+      .from('project_clients')
+      .select('id')
+      .eq('project_id', req.params.id)
+      .eq('email', email)
+      .maybeSingle();
+    existing = existRow;
+  }
+
+  if(existing){
+    const { data, error } = await supabaseAdmin
+      .from('project_clients')
+      .update({ client_name, phone, user_id: userId })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if(error) return res.status(400).json({ error: error.message });
+    return res.json(data);
+  }
+
   const { data, error } = await supabaseAdmin
     .from('project_clients')
-    .insert({ project_id: req.params.id, client_name, email, phone })
+    .insert({ project_id: req.params.id, client_name, email, phone, user_id: userId })
     .select()
     .single();
 
