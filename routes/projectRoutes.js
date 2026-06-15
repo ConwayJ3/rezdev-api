@@ -14,10 +14,10 @@ coRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 });
 
 coRouter.post('/', requireAuth, requireProjectAccess, async (req, res) => {
-  const { title, explanation, category, amount, notes } = req.body;
+  const { title, explanation, category, amount, notes, link } = req.body;
   if(!title) return res.status(400).json({ error: 'title required' });
   const { data, error } = await supabaseAdmin.from('change_orders')
-    .insert({ project_id: req.params.projectId, title, explanation, category, amount, notes, status: 'pending_review', submitted_by: req.userId })
+    .insert({ project_id: req.params.projectId, title, explanation, category, amount, notes, link, status: 'pending_review', submitted_by: req.userId })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
