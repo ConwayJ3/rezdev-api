@@ -28,13 +28,13 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 router.put('/config', requireAuth, requireRole('owner','builder'), requireProjectAccess, async (req, res) => {
   const pid = req.params.projectId;
   const {
-    living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, contingency_pct,
+    living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, garage_sqft, contingency_pct,
     gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget
   } = req.body;
 
   const { data, error } = await supabaseAdmin
     .from('budget_configs')
-    .upsert({ project_id: pid, living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft,
+    .upsert({ project_id: pid, living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, garage_sqft,
       contingency_pct, gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget,
       updated_at: new Date().toISOString() },
       { onConflict: 'project_id' })
