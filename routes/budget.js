@@ -29,15 +29,17 @@ router.put('/config', requireAuth, requireRole('owner','builder'), requireProjec
   const pid = req.params.projectId;
   const {
     living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, garage_sqft, contingency_pct,
-    gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget
+    gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget, calc_data
   } = req.body;
+
+  const row = { project_id: pid, living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, garage_sqft,
+      contingency_pct, gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget,
+      updated_at: new Date().toISOString() };
+  if(calc_data !== undefined) row.calc_data = calc_data;
 
   const { data, error } = await supabaseAdmin
     .from('budget_configs')
-    .upsert({ project_id: pid, living_sqft, finish_cost_sqft, foundation_sqft, porch_sqft, garage_sqft,
-      contingency_pct, gc_fee_type, gc_fee_val, gc_fee_amount, build_budget, total_budget,
-      updated_at: new Date().toISOString() },
-      { onConflict: 'project_id' })
+    .upsert(row, { onConflict: 'project_id' })
     .select()
     .single();
 
