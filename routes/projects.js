@@ -45,7 +45,7 @@ router.get('/', requireAuth, async (req, res) => {
     // Builder/PM/Owner: return all company projects
     const { data, error } = await req.db
       .from('projects')
-      .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order)')
+      .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, start_date, end_date, sort_order), budget_configs(total_budget, build_budget)')
       .eq('company_id', req.companyId)
       .order('created_at', { ascending: false });
     if(error) return res.status(400).json({ error: error.message });
