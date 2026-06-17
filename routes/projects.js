@@ -53,10 +53,10 @@ router.get('/', requireAuth, async (req, res) => {
     // Attach group names for grouped projects
     const groupIds = [...new Set((data||[]).map(p => p.group_id).filter(Boolean))];
     if(groupIds.length){
-      const { data: groups } = await supabaseAdmin.from('lot_groups').select('id, name').in('id', groupIds);
+      const { data: groups } = await supabaseAdmin.from('lot_groups').select('id, name, client').in('id', groupIds);
       const groupMap = {};
-      (groups||[]).forEach(g => { groupMap[g.id] = g.name; });
-      (data||[]).forEach(p => { if(p.group_id) p.group_name = groupMap[p.group_id]; });
+      (groups||[]).forEach(g => { groupMap[g.id] = g; });
+      (data||[]).forEach(p => { if(p.group_id && groupMap[p.group_id]){ p.group_name = groupMap[p.group_id].name; p.group_client = groupMap[p.group_id].client; } });
     }
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
@@ -134,6 +134,45 @@ router.post('/groups', requireAuth, requireRole('owner','builder'), async (req, 
     .single();
 
   res.status(201).json(full);
+});
+
+// POST /projects/groups/:groupId/client — assign a client to an entire lot group (all member projects)
+router.post('/groups/:groupId/client', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { client_name, email, phone } = req.body;
+  if(!client_name) return res.status(400).json({ error: 'Client name required' });
+
+  // Look up the client user by email
+  let userId = null;
+  if(email){
+    const { data: userRow } = await supabaseAdmin
+      .from('users').select('id').eq('email', email).eq('role','client').maybeSingle();
+    userId = userRow ? userRow.id : null;
+  }
+
+  // Get all member projects of this group
+  const { data: members, error: memErr } = await supabaseAdmin
+    .from('lot_group_members').select('project_id').eq('group_id', req.params.groupId);
+  if(memErr) return res.status(400).json({ error: memErr.message });
+
+  const projectIds = (members||[]).map(m => m.project_id).filter(Boolean);
+
+  // Link the client to every project in the group (dedup by email per project)
+  for(const pid of projectIds){
+    const { data: existing } = await supabaseAdmin
+      .from('project_clients').select('id').eq('project_id', pid).eq('email', email||'').maybeSingle();
+    if(existing){
+      await supabaseAdmin.from('project_clients')
+        .update({ client_name, phone, user_id: userId }).eq('id', existing.id);
+    } else {
+      await supabaseAdmin.from('project_clients')
+        .insert({ project_id: pid, client_name, email, phone, user_id: userId });
+    }
+  }
+
+  // Store client name on the group for display
+  await supabaseAdmin.from('lot_groups').update({ client: client_name }).eq('id', req.params.groupId);
+
+  res.json({ success: true, linked_projects: projectIds.length });
 });
 
 // GET /projects/:id
