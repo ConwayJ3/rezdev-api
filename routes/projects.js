@@ -210,6 +210,28 @@ router.post('/groups/:groupId/lots', requireAuth, requireRole('owner','builder')
     status: 'planning', budget: req.body.budget || group.budget_per_lot || 0, sort_order: nextNum - 1,
   });
 
+  // Inherit the group's existing client links: any client linked to other lots in this group
+  // should also be linked to this new lot.
+  const { data: siblingMembers } = await supabaseAdmin
+    .from('lot_group_members').select('project_id').eq('group_id', gid).neq('project_id', proj.id);
+  const siblingIds = (siblingMembers||[]).map(m => m.project_id).filter(Boolean);
+  if(siblingIds.length){
+    const { data: clientLinks } = await supabaseAdmin
+      .from('project_clients').select('client_name, email, phone, user_id').in('project_id', siblingIds);
+    // Dedup by email so we don't double-link the same client
+    const seen = new Set();
+    const uniqueClients = [];
+    (clientLinks||[]).forEach(c => {
+      const key = (c.email||'') + '|' + (c.user_id||'');
+      if(!seen.has(key)){ seen.add(key); uniqueClients.push(c); }
+    });
+    for(const c of uniqueClients){
+      await supabaseAdmin.from('project_clients').insert({
+        project_id: proj.id, client_name: c.client_name, email: c.email, phone: c.phone, user_id: c.user_id,
+      });
+    }
+  }
+
   res.status(201).json({ success: true, project: proj });
 });
 
