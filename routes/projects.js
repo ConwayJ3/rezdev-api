@@ -35,10 +35,18 @@ router.get('/', requireAuth, async (req, res) => {
       if(!projectIds.length) return res.json([]);
       const { data, error } = await supabaseAdmin
         .from('projects')
-        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order)')
+        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order), budget_configs(total_budget, build_budget)')
         .in('id', projectIds)
         .order('created_at', { ascending: false });
       if(error) return res.status(400).json({ error: error.message });
+      // Attach group names
+      const cGroupIds = [...new Set((data||[]).map(p => p.group_id).filter(Boolean))];
+      if(cGroupIds.length){
+        const { data: cGroups } = await supabaseAdmin.from('lot_groups').select('id, name, client').in('id', cGroupIds);
+        const cMap = {};
+        (cGroups||[]).forEach(g => { cMap[g.id] = g; });
+        (data||[]).forEach(p => { if(p.group_id && cMap[p.group_id]){ p.group_name = cMap[p.group_id].name; p.group_client = cMap[p.group_id].client; } });
+      }
       return res.json(data);
     }
 
