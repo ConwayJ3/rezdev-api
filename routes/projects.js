@@ -175,6 +175,59 @@ router.post('/groups/:groupId/client', requireAuth, requireRole('owner','builder
   res.json({ success: true, linked_projects: projectIds.length });
 });
 
+// POST /projects/groups/:groupId/lots — add a new lot (project) to an existing group
+router.post('/groups/:groupId/lots', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const gid = req.params.groupId;
+  const { data: group, error: gErr } = await supabaseAdmin
+    .from('lot_groups').select('id, area, budget_per_lot').eq('id', gid).single();
+  if(gErr || !group) return res.status(404).json({ error: 'Group not found' });
+
+  // Determine next lot number
+  const { data: members } = await supabaseAdmin
+    .from('lot_group_members').select('lot_number').eq('group_id', gid);
+  const nextNum = (members||[]).reduce((m,x)=>Math.max(m, x.lot_number||0), 0) + 1;
+  const lotName = req.body.name || ('Lot ' + nextNum);
+  const address = req.body.address || (group.area ? `Lot ${nextNum} — ${group.area}` : `Lot ${nextNum}`);
+
+  // Create the project
+  const { data: proj, error: pErr } = await supabaseAdmin
+    .from('projects')
+    .insert({ company_id: req.companyId, name: lotName, address, status: 'planning', created_by: req.userId, group_id: gid })
+    .select().single();
+  if(pErr) return res.status(400).json({ error: pErr.message });
+
+  // Link to group
+  await supabaseAdmin.from('lot_group_members').insert({
+    group_id: gid, project_id: proj.id, lot_name: lotName, lot_number: nextNum,
+    status: 'planning', budget: req.body.budget || group.budget_per_lot || 0, sort_order: nextNum - 1,
+  });
+
+  res.status(201).json({ success: true, project: proj });
+});
+
+// PUT /projects/groups/:groupId — update group name/area/client/budget
+router.put('/groups/:groupId', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { name, area, client, budget_per_lot } = req.body;
+  const updates = {};
+  if(name !== undefined) updates.name = name;
+  if(area !== undefined) updates.area = area;
+  if(client !== undefined) updates.client = client;
+  if(budget_per_lot !== undefined) updates.budget_per_lot = budget_per_lot;
+  const { data, error } = await supabaseAdmin
+    .from('lot_groups').update(updates).eq('id', req.params.groupId).select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// DELETE /projects/groups/:groupId/lots/:projectId — remove a lot from a group (deletes the project)
+router.delete('/groups/:groupId/lots/:projectId', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const { groupId, projectId } = req.params;
+  await supabaseAdmin.from('lot_group_members').delete().eq('group_id', groupId).eq('project_id', projectId);
+  await supabaseAdmin.from('project_clients').delete().eq('project_id', projectId);
+  await supabaseAdmin.from('projects').delete().eq('id', projectId);
+  res.json({ success: true });
+});
+
 // GET /projects/:id
 router.get('/:id', requireAuth, requireProjectAccess, async (req, res) => {
   const { data, error } = await req.db
