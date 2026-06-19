@@ -42,6 +42,7 @@ const authLimiter = rateLimit({
 
 app.use('/auth', authLimiter);
 const signwellRouter = require('./routes/signwell');
+const contractTemplateRoutes = require('./routes/contractTemplates');
 const driveRouter    = require('./routes/drive');
 app.use(generalLimiter);
 
@@ -106,6 +107,7 @@ app.use('/projects/:projectId/qc',             qcRouter);
 
 // ── Top-level routes ──────────────────────────────────────────────
 app.use('/contractors', contractorRoutes);
+app.use('/contract-templates', contractTemplateRoutes);
 app.use('/users',       userRoutes);
 app.use('/companies',   userRoutes);
 app.use('/rfps',        rfpRouter);

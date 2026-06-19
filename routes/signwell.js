@@ -5,6 +5,8 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const SIGNWELL_API = 'https://www.signwell.com/api/v1';
 const SW_KEY = process.env.SIGNWELL_API_KEY;
+const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
+const { uploadFile } = require('../lib/storage');
 
 // POST /signwell/send
 router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
@@ -121,6 +123,119 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
     res.json({ success: true, document_id: swData.id, signing_url: signingUrl });
   } catch(e) {
     console.error('[SignWell] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /signwell/send-contract — generate a branded contract PDF from the company's
+// template + project data, then send it to SignWell for signature.
+router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
+    const ctype = contract_type || 'client';
+    if(!project_id) return res.status(400).json({ error: 'project_id required' });
+    if(!client_email) return res.status(400).json({ error: 'client_email required' });
+
+    // 1. Load the company's template for this contract type
+    const { data: tmpl } = await supabaseAdmin
+      .from('contract_templates')
+      .select('*')
+      .eq('company_id', req.companyId)
+      .eq('contract_type', ctype)
+      .maybeSingle();
+    if(!tmpl || !tmpl.body) return res.status(400).json({ error: 'No contract template configured for type: '+ctype });
+
+    // 2. Load project + company
+    const { data: project } = await supabaseAdmin
+      .from('projects')
+      .select('*, budget_configs(total_budget, build_budget)')
+      .eq('id', project_id).single();
+    const { data: company } = await supabaseAdmin
+      .from('companies').select('*').eq('id', req.companyId).maybeSingle();
+
+    const builderName = (req.user.first_name||'')+' '+(req.user.last_name||'');
+
+    // 3. Merge data into the template
+    const data = buildMergeData({
+      project, company,
+      builder: { name: builderName.trim() },
+      client:  { name: client_name||'', email: client_email },
+      extra:   extra_fields || {},
+    });
+    const mergedBody = mergeTemplate(tmpl.body, data);
+
+    // 4. Optional: fetch company logo for the header
+    let logoBuffer = null;
+    if(company && company.logo_url){
+      try { const r = await fetch(company.logo_url); if(r.ok) logoBuffer = Buffer.from(await r.arrayBuffer()); } catch(e){}
+    }
+
+    // 5. Generate the branded PDF
+    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', subcontractor:'Subcontractor Agreement', nda:'Non-Disclosure Agreement', change_order:'Change Order Authorization' };
+    const pdfBuffer = await generateContractPdf({
+      title: titleMap[ctype] || 'Contract',
+      bodyText: mergedBody,
+      company: company || {},
+      logoBuffer,
+    });
+
+    // 6. Upload PDF to Supabase storage, get a public URL for SignWell
+    const fileName = `${req.companyId}/${project_id}/${ctype}_${Date.now()}.pdf`;
+    await uploadFile('contracts', fileName, pdfBuffer, 'application/pdf');
+    const { data: urlData } = supabaseAdmin.storage.from(
+      process.env.STORAGE_BUCKET_CONTRACTS || 'contracts'
+    ).getPublicUrl(fileName);
+    const fileUrl = urlData.publicUrl;
+
+    // 7. Create a contracts record
+    const { data: contractRow } = await supabaseAdmin.from('contracts').insert({
+      project_id, title: titleMap[ctype] || 'Contract', body: mergedBody,
+      status:'draft', created_by: req.userId, contract_type: ctype,
+      contracted_amount: 0,
+    }).select().single();
+
+    // 8. Send to SignWell as a document built from the generated PDF
+    const recipients = [
+      { id:'1', name: client_name || 'Client', email: client_email },
+      { id:'2', name: builderName.trim() || 'Builder', email: req.user.email },
+    ];
+    const swRes = await fetch(SIGNWELL_API+'/documents', {
+      method:'POST',
+      headers:{ 'X-Api-Key': SW_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        test_mode: false,
+        name: (titleMap[ctype]||'Contract')+' — '+(project?.name||project?.address||''),
+        files: [{ name:'contract.pdf', file_url: fileUrl }],
+        recipients,
+        embedded_signing: true,
+        reminder_enabled: true,
+        apply_signing_order: true,
+        fields: [[
+          { api_id:'sig_client',  type:'signature', page:-1, x:75,  y:690, required:true, recipient_id:'1' },
+          { api_id:'date_client', type:'date',      page:-1, x:75,  y:720, required:true, recipient_id:'1' },
+          { api_id:'sig_builder', type:'signature', page:-1, x:320, y:690, required:true, recipient_id:'2' },
+          { api_id:'date_builder',type:'date',      page:-1, x:320, y:720, required:true, recipient_id:'2' },
+        ]],
+      }),
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
+
+    let signingUrl = null;
+    if(Array.isArray(swData.recipients)){
+      const r = swData.recipients.find(x=>x.id==='1') || swData.recipients[0];
+      signingUrl = r ? (r.embedded_signing_url || r.signing_url) : null;
+    }
+    if(contractRow){
+      await supabaseAdmin.from('contracts').update({
+        status:'sent', sent_at:new Date().toISOString(),
+        signwell_document_id: swData.id, signing_url: signingUrl, recipient_email: client_email,
+        pdf_url: fileUrl,
+      }).eq('id', contractRow.id);
+    }
+    res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
+  } catch(e){
+    console.error('[SignWell send-contract] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
