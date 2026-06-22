@@ -294,7 +294,7 @@ router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProj
   const allowed = ['name','address','city','state','zip','county','neighborhood',
     'status','project_type','beds','baths','livable_sf','total_sf','lot_area',
     'site_width','site_depth','lot','block','zoning_district','coverage_ratio',
-    'front_setback','rear_setback','side_setback','max_height','notes'];
+    'front_setback','rear_setback','side_setback','max_height','notes','schedule_start_date'];
   const updates = {};
   allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
   updates.updated_at = new Date().toISOString();
