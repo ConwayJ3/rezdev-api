@@ -3,6 +3,38 @@ const router  = express.Router({ mergeParams: true });
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireRole, requireProjectAccess } = require('../middleware/auth');
 
+// Compute cascaded start/end dates for phases from a project start date.
+// Phases run sequentially in sort_order; phases flagged simultaneous run
+// parallel to the previous phase (share its start), not after it.
+// An explicit start_date already on a phase re-anchors the chain from there.
+function computePhaseDates(phases, scheduleStart){
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
+  const iso = d => d.toISOString().slice(0,10);
+  let anchor = scheduleStart ? new Date(scheduleStart+'T00:00:00') : null;
+  let prevStart = null, prevEnd = null;
+  return phases.map(p => {
+    const days = Math.max(1, parseInt(p.days,10) || 7);
+    // If this phase has an explicitly set start_date, re-anchor to it.
+    if(p.start_date){ anchor = new Date(p.start_date+'T00:00:00'); }
+    if(!anchor){
+      // No anchor available yet — leave dates null.
+      return { ...p, start_date: p.start_date || null, end_date: p.end_date || null };
+    }
+    let start;
+    if(p.simultaneous && prevStart){
+      start = new Date(prevStart);            // parallel to previous phase
+    } else {
+      start = prevEnd ? addDays(prevEnd, 1) : new Date(anchor);
+    }
+    const end = addDays(start, days - 1);
+    prevStart = start;
+    // For simultaneous phases, don't advance the sequential cursor past a
+    // longer preceding phase — keep the later of the two ends as the cursor.
+    prevEnd = (p.simultaneous && prevEnd && prevEnd > end) ? prevEnd : end;
+    return { ...p, start_date: iso(start), end_date: iso(end) };
+  });
+}
+
 // GET /projects/:projectId/phases
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
   const { data, error } = await req.db
@@ -12,7 +44,17 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
     .order('sort_order');
 
   if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+
+  // Look up the project's schedule start date to anchor the cascade.
+  let scheduleStart = null;
+  try {
+    const { data: proj } = await supabaseAdmin
+      .from('projects').select('schedule_start_date').eq('id', req.params.projectId).maybeSingle();
+    scheduleStart = proj && proj.schedule_start_date ? proj.schedule_start_date : null;
+  } catch(e){}
+
+  const computed = computePhaseDates(data || [], scheduleStart);
+  res.json(computed);
 });
 
 // POST /projects/:projectId/phases
