@@ -11,6 +11,7 @@ const morgan     = require('morgan');
 const authRoutes        = require('./routes/auth');
 const projectRoutes     = require('./routes/projects');
 const phaseRoutes       = require('./routes/phases');
+const projectEventRoutes = require('./routes/projectEvents');
 const budgetRoutes      = require('./routes/budget');
 const messageRoutes     = require('./routes/messages');
 const fileRoutes        = require('./routes/files');
@@ -82,6 +83,7 @@ app.use('/auth', authRoutes);
 // ── Project-scoped routes ─────────────────────────────────────────
 app.use('/projects', projectRoutes);
 app.use('/projects/:projectId/phases',         phaseRoutes);
+app.use('/projects/:projectId/events',         projectEventRoutes);
 app.use('/projects/:projectId/budget',         budgetRoutes);
 app.use('/projects/:projectId/messages',       messageRoutes);
 app.use('/projects/:projectId/files',          fileRoutes);
