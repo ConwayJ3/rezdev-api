@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth } = require('../middleware/auth');
+const { sendClientInvite } = require('../lib/email');
 
 // POST /auth/login
 router.post('/login', async (req, res) => {
@@ -131,6 +132,81 @@ router.post('/invite', requireAuth, async (req, res) => {
   }
 
   res.status(201).json(profile);
+});
+
+// POST /auth/invite-client — create a client account and email a branded set-password invite
+router.post('/invite-client', requireAuth, async (req, res) => {
+  if(!['owner','builder','pm'].includes(req.userRole)) {
+    return res.status(403).json({ error: 'Not authorized to invite clients' });
+  }
+  const { email, first_name, last_name, project_id } = req.body;
+  if(!email || !first_name) {
+    return res.status(400).json({ error: 'email and first_name required' });
+  }
+
+  try {
+    // 1. Create the auth account (unconfirmed; they'll set their own password)
+    const tempPassword = 'RezDev' + Math.random().toString(36).slice(2,12) + '!A';
+    const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password: tempPassword,
+      email_confirm: true,   // allow immediate login once they set a password
+      user_metadata: { first_name, last_name: last_name || '', role: 'client' }
+    });
+    if(authErr) {
+      if(/already|registered|exists/i.test(authErr.message)) {
+        return res.status(409).json({ error: 'An account with this email already exists.' });
+      }
+      return res.status(400).json({ error: authErr.message });
+    }
+
+    // 2. Create the profile row
+    const { error: profileErr } = await supabaseAdmin
+      .from('users')
+      .insert({
+        id:         authUser.user.id,
+        company_id: req.companyId,
+        first_name,
+        last_name:  last_name || '',
+        email,
+        role:       'client',
+        status:     'pending',
+      });
+    if(profileErr) return res.status(400).json({ error: profileErr.message });
+
+    // 3. Generate a secure set-password (recovery) link pointing to our branded page
+    const appUrl = process.env.FRONTEND_URL || 'https://rezdevos.com';
+    const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: { redirectTo: appUrl + '/set-password.html' }
+    });
+    if(linkErr) return res.status(400).json({ error: 'Account created but could not generate invite link: ' + linkErr.message });
+
+    const setupUrl = (linkData && linkData.properties && linkData.properties.action_link) || (appUrl + '/set-password.html');
+
+    // 4. Look up the inviting builder + company name for the email
+    let builderName = '', companyName = '';
+    try {
+      const { data: me } = await supabaseAdmin.from('users').select('first_name,last_name').eq('id', req.userId).maybeSingle();
+      if(me) builderName = [me.first_name, me.last_name].filter(Boolean).join(' ');
+      const { data: co } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      if(co) companyName = co.name;
+    } catch(e){ /* non-fatal */ }
+
+    // 5. Send the branded email
+    await sendClientInvite({
+      to: email,
+      clientName: first_name,
+      builderName,
+      companyName,
+      setupUrl,
+    });
+
+    res.json({ success: true, user_id: authUser.user.id, message: 'Invite sent to ' + email });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
