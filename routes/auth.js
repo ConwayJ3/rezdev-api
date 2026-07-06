@@ -140,6 +140,7 @@ router.post('/invite-client', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Not authorized to invite clients' });
   }
   const { email, first_name, last_name, project_id } = req.body;
+  const role = ['client','pm','builder'].includes(req.body.role) ? req.body.role : 'client';
   if(!email || !first_name) {
     return res.status(400).json({ error: 'email and first_name required' });
   }
@@ -151,7 +152,7 @@ router.post('/invite-client', requireAuth, async (req, res) => {
       email,
       password: tempPassword,
       email_confirm: true,   // allow immediate login once they set a password
-      user_metadata: { first_name, last_name: last_name || '', role: 'client' }
+      user_metadata: { first_name, last_name: last_name || '', role }
     });
     if(authErr) {
       if(/already|registered|exists/i.test(authErr.message)) {
@@ -169,7 +170,7 @@ router.post('/invite-client', requireAuth, async (req, res) => {
         first_name,
         last_name:  last_name || '',
         email,
-        role:       'client',
+        role,
         status:     'pending',
       });
     if(profileErr) return res.status(400).json({ error: profileErr.message });
@@ -196,7 +197,7 @@ router.post('/invite-client', requireAuth, async (req, res) => {
 
     // 5. Send the branded email
     try {
-      await sendClientInvite({ to: email, clientName: first_name, builderName, companyName, setupUrl });
+      await sendClientInvite({ to: email, clientName: first_name, builderName, companyName, setupUrl, role });
     } catch(emailErr){
       try { await supabaseAdmin.from('users').delete().eq('id', authUser.user.id); } catch(e){}
       try { await supabaseAdmin.auth.admin.deleteUser(authUser.user.id); } catch(e){}
