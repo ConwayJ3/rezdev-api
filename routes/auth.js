@@ -24,8 +24,11 @@ router.post('/login', async (req, res) => {
     return res.status(403).json({ error: 'Account is locked. Contact your administrator.' });
   }
 
-  // Update last login
-  await supabaseAdmin.from('users').update({ last_login: new Date().toISOString() }).eq('id', data.user.id);
+  // Update last login; activate the account on first login (pending -> active)
+  const loginUpdate = { last_login: new Date().toISOString() };
+  if(profile?.status === 'pending') loginUpdate.status = 'active';
+  await supabaseAdmin.from('users').update(loginUpdate).eq('id', data.user.id);
+  if(loginUpdate.status) profile.status = 'active';
 
   res.json({
     access_token:  data.session.access_token,
