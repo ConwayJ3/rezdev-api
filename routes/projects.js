@@ -50,7 +50,31 @@ router.get('/', requireAuth, async (req, res) => {
       return res.json(data);
     }
 
-    // Builder/PM/Owner: return all company projects
+    // PM: only projects assigned to them via pm_assignments
+    if(req.userRole === 'pm'){
+      const { data: pmRows } = await supabaseAdmin
+        .from('pm_assignments')
+        .select('project_id')
+        .eq('user_id', req.userId);
+      const pmProjectIds = [...new Set((pmRows||[]).map(r => r.project_id).filter(Boolean))];
+      if(!pmProjectIds.length) return res.json([]);
+      const { data: pmData, error: pmErr } = await supabaseAdmin
+        .from('projects')
+        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order), budget_configs(total_budget, build_budget)')
+        .in('id', pmProjectIds)
+        .eq('company_id', req.companyId)
+        .order('created_at', { ascending: false });
+      if(pmErr) return res.status(400).json({ error: pmErr.message });
+      const pmGroupIds = [...new Set((pmData||[]).map(p => p.group_id).filter(Boolean))];
+      if(pmGroupIds.length){
+        const { data: pmGroups } = await supabaseAdmin.from('lot_groups').select('id, name, client').in('id', pmGroupIds);
+        const pmMap = {}; (pmGroups||[]).forEach(g => { pmMap[g.id] = g; });
+        (pmData||[]).forEach(p => { if(p.group_id && pmMap[p.group_id]){ p.group_name = pmMap[p.group_id].name; p.group_client = pmMap[p.group_id].client; } });
+      }
+      return res.json(pmData);
+    }
+
+    // Builder/Owner: return all company projects
     const { data, error } = await req.db
       .from('projects')
       .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, group_id, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order), budget_configs(total_budget, build_budget)')
