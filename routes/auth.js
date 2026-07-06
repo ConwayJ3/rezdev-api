@@ -195,13 +195,13 @@ router.post('/invite-client', requireAuth, async (req, res) => {
     } catch(e){ /* non-fatal */ }
 
     // 5. Send the branded email
-    await sendClientInvite({
-      to: email,
-      clientName: first_name,
-      builderName,
-      companyName,
-      setupUrl,
-    });
+    try {
+      await sendClientInvite({ to: email, clientName: first_name, builderName, companyName, setupUrl });
+    } catch(emailErr){
+      try { await supabaseAdmin.from('users').delete().eq('id', authUser.user.id); } catch(e){}
+      try { await supabaseAdmin.auth.admin.deleteUser(authUser.user.id); } catch(e){}
+      return res.status(502).json({ error: 'Could not send invite email: ' + emailErr.message });
+    }
 
     res.json({ success: true, user_id: authUser.user.id, message: 'Invite sent to ' + email });
   } catch(e){
