@@ -19,11 +19,12 @@ router.get('/', requireAuth, requireRole('owner','builder'), async (req, res) =>
 router.get('/pm-assignments', requireAuth, requireRole('owner','builder'), async (req, res) => {
   const { data, error } = await req.db
     .from('pm_assignments')
-    .select(`*, users(first_name, last_name, email), projects(name)`)
-    .eq('users.company_id', req.companyId);
+    .select(`*, users!pm_assignments_user_id_fkey(first_name, last_name, email, company_id), projects(name)`);
 
   if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+  // Filter to this company (the embedded user's company)
+  const filtered = (data||[]).filter(r => r.users && r.users.company_id === req.companyId);
+  res.json(filtered);
 });
 
 // PUT /users/pm-assignments — bulk update PM project assignments
