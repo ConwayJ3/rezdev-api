@@ -404,26 +404,61 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
     .from('projects').select('*, budget_configs(total_budget, build_budget)').eq('id', projectId).maybeSingle();
   const { data: company } = await supabaseAdmin
     .from('companies').select('*').eq('id', companyId).maybeSingle();
-  const cfg = project && (Array.isArray(project.budget_configs) ? project.budget_configs[0] : project.budget_configs);
-  const total = cfg && (cfg.total_budget || cfg.build_budget);
+  // Load the full budget config for this project
+  const { data: budget } = await supabaseAdmin
+    .from('budget_configs').select('*').eq('project_id', projectId).maybeSingle();
+
   const fmtMoney = n => (n==null||n==='') ? '' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtNum   = n => (n==null||n==='') ? '' : Number(n).toLocaleString('en-US');
+  const fmtPct   = n => (n==null||n==='') ? '' : Number(n) + '%';
   const today = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
   const builderName = ((builderUser.first_name||'')+' '+(builderUser.last_name||'')).trim();
+  const b = budget || {};
+  const totalBudget = b.total_budget != null ? b.total_budget : (b.build_budget != null ? b.build_budget : null);
+
+  // Numeric-word / long form of the total for contracts that spell out the price
+  const livingSqft = b.living_sqft;
+  const pricePerSqft = (totalBudget && livingSqft) ? (Number(totalBudget)/Number(livingSqft)) : null;
+
   return Object.assign({
     date: today,
+    // Company
     company_name:    (company && company.name) || '',
     company_address: (company && company.address) || '',
     company_phone:   (company && company.phone) || '',
     company_email:   (company && company.email) || '',
+    company_license: (company && (company.license_number||company.license)) || '',
     builder_name:    builderName,
+    // Client
     client_name:     clientName || '',
     client_email:    clientEmail || '',
+    // Project
     project_name:    (project && project.name) || '',
     project_address: (project && project.address) || '',
     project_city:    (project && project.city) || '',
     project_state:   (project && project.state) || '',
-    contract_price:  fmtMoney(total),
-    sig_client: '', sig_builder: '',  // signature anchors render blank in the doc
+    project_type:    (project && project.project_type) || '',
+    project_beds:    (project && project.beds) || '',
+    project_baths:   (project && project.baths) || '',
+    // Budget — money
+    total_project_budget: fmtMoney(totalBudget),
+    contract_price:       fmtMoney(totalBudget),   // alias
+    build_budget:         fmtMoney(b.build_budget),
+    gc_fee_amount:        fmtMoney(b.gc_fee_amount),
+    // Budget — square footage
+    living_sqft:     fmtNum(b.living_sqft),
+    foundation_sqft: fmtNum(b.foundation_sqft),
+    porch_sqft:      fmtNum(b.porch_sqft),
+    garage_sqft:     fmtNum(b.garage_sqft),
+    total_sqft:      fmtNum((Number(b.living_sqft||0)+Number(b.porch_sqft||0)+Number(b.garage_sqft||0)) || ''),
+    price_per_sqft:  fmtMoney(pricePerSqft),
+    finish_cost_sqft: fmtMoney(b.finish_cost_sqft),
+    // Budget — rates
+    contingency_pct: fmtPct(b.contingency_pct),
+    gc_fee_type:     b.gc_fee_type || '',
+    gc_fee_val:      b.gc_fee_val != null ? String(b.gc_fee_val) : '',
+    // Signature anchors
+    sig_client: '', sig_builder: '',
   }, extra || {});
 }
 
