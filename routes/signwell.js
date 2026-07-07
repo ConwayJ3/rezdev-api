@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const SIGNWELL_API = 'https://www.signwell.com/api/v1';
 const SW_KEY = process.env.SIGNWELL_API_KEY;
 const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
-const { fillDocx, convertDocxToPdf } = require('../lib/docxContract');
+const { fillDocx, convertDocxToPdf, applyTagsToDocx } = require('../lib/docxContract');
 const { uploadFile } = require('../lib/storage');
 
 // POST /signwell/send
@@ -511,6 +511,75 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
   } catch(e){
     console.error('[SignWell send-docx-contract] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /signwell/templates/:type/text — extract the DOCX's readable text for in-app tagging
+router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const ctype = req.params.type;
+    const { data: tmpl } = await supabaseAdmin
+      .from('contract_templates').select('*')
+      .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
+    if(!tmpl || !tmpl.docx_url) return res.status(404).json({ error: 'No DOCX template uploaded for this type' });
+
+    const docxRes = await fetch(tmpl.docx_url);
+    if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
+    const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
+
+    const mammoth = require('mammoth');
+    // Plain text (for tagging/selection) and HTML (for display fidelity)
+    const textResult = await mammoth.extractRawText({ buffer: docxBuffer });
+    const htmlResult = await mammoth.convertToHtml({ buffer: docxBuffer });
+
+    res.json({
+      success: true,
+      contract_type: ctype,
+      text: textResult.value || '',
+      html: htmlResult.value || '',
+      has_existing_tags: /\{\{\s*[a-zA-Z0-9_]+\s*\}\}/.test(textResult.value || ''),
+    });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /signwell/templates/:type/apply-tags — apply tagging rules into the stored DOCX
+// Body: { rules: [{ find: "John Smith", tag: "client_name", all: false, occurrence_count: 1 }, ...] }
+router.post('/templates/:type/apply-tags', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const ctype = req.params.type;
+    const rules = Array.isArray(req.body.rules) ? req.body.rules : [];
+    if(!rules.length) return res.status(400).json({ error: 'No tagging rules provided' });
+
+    const { data: tmpl } = await supabaseAdmin
+      .from('contract_templates').select('*')
+      .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
+    if(!tmpl || !tmpl.docx_url) return res.status(404).json({ error: 'No DOCX template for this type' });
+
+    // Download current DOCX
+    const docxRes = await fetch(tmpl.docx_url);
+    if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
+    const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
+
+    // Apply the tagging rules into the DOCX (formatting preserved)
+    const tagged = applyTagsToDocx(docxBuffer, rules);
+
+    // Save the tagged DOCX back (new versioned filename)
+    const { uploadFile } = require('../lib/storage');
+    const fileName = `${req.companyId}/templates/${ctype}_tagged_${Date.now()}.docx`;
+    const storagePath = await uploadFile('contracts', fileName, tagged,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
+    const newUrl = urlData.publicUrl;
+
+    await supabaseAdmin.from('contract_templates')
+      .update({ docx_url: newUrl, docx_path: storagePath })
+      .eq('company_id', req.companyId).eq('contract_type', ctype);
+
+    res.json({ success: true, docx_url: newUrl, applied: rules.length });
+  } catch(e){
     res.status(500).json({ error: e.message });
   }
 });
