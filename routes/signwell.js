@@ -609,8 +609,10 @@ router.post('/templates/:type/apply-tags', requireAuth, requireRole('owner','bui
     const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
     const newUrl = urlData.publicUrl;
 
+    const updatePayload = { docx_url: newUrl, docx_path: storagePath };
+    if(Array.isArray(req.body.fill_fields)) updatePayload.fill_fields = req.body.fill_fields;
     await supabaseAdmin.from('contract_templates')
-      .update({ docx_url: newUrl, docx_path: storagePath })
+      .update(updatePayload)
       .eq('company_id', req.companyId).eq('contract_type', ctype);
 
     res.json({ success: true, docx_url: newUrl, applied: rules.length });
