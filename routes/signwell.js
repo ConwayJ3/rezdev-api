@@ -6,6 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const SIGNWELL_API = 'https://www.signwell.com/api/v1';
 const SW_KEY = process.env.SIGNWELL_API_KEY;
 const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
+const { fillDocx, convertDocxToPdf } = require('../lib/docxContract');
 const { uploadFile } = require('../lib/storage');
 
 // POST /signwell/send
@@ -361,6 +362,155 @@ router.delete('/templates/:contract_type', requireAuth, requireRole('owner','bui
       .eq('contract_type', req.params.contract_type);
     res.json({ success: true });
   } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /signwell/templates/upload-docx — upload a builder's .docx contract template
+router.post('/templates/upload-docx', requireAuth, requireRole('owner','builder'), upload.single('file'), async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    if(!req.file) return res.status(400).json({ error: 'No file provided' });
+    const contractType = req.body.contract_type || 'client';
+    const templateName = req.body.template_name || contractType + ' contract';
+    const { uploadFile } = require('../lib/storage');
+    const fileName = `${req.companyId}/templates/${contractType}_${Date.now()}.docx`;
+    const storagePath = await uploadFile('contracts', fileName, req.file.buffer,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
+    const docxUrl = urlData.publicUrl;
+
+    // Upsert the contract_templates record (docx path)
+    const { data, error } = await supabaseAdmin
+      .from('contract_templates')
+      .upsert({
+        company_id:    req.companyId,
+        contract_type: contractType,
+        template_name: templateName,
+        docx_url:      docxUrl,
+        docx_path:     storagePath,
+      }, { onConflict: 'company_id,contract_type' })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ success: true, docx_url: docxUrl, record: data });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Build the merge-data object used to fill DOCX tags (flat key/value for docxtemplater)
+async function buildDocxMergeData({ companyId, projectId, clientName, clientEmail, builderUser, extra }){
+  const { data: project } = await supabaseAdmin
+    .from('projects').select('*, budget_configs(total_budget, build_budget)').eq('id', projectId).maybeSingle();
+  const { data: company } = await supabaseAdmin
+    .from('companies').select('*').eq('id', companyId).maybeSingle();
+  const cfg = project && (Array.isArray(project.budget_configs) ? project.budget_configs[0] : project.budget_configs);
+  const total = cfg && (cfg.total_budget || cfg.build_budget);
+  const fmtMoney = n => (n==null||n==='') ? '' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const today = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+  const builderName = ((builderUser.first_name||'')+' '+(builderUser.last_name||'')).trim();
+  return Object.assign({
+    date: today,
+    company_name:    (company && company.name) || '',
+    company_address: (company && company.address) || '',
+    company_phone:   (company && company.phone) || '',
+    company_email:   (company && company.email) || '',
+    builder_name:    builderName,
+    client_name:     clientName || '',
+    client_email:    clientEmail || '',
+    project_name:    (project && project.name) || '',
+    project_address: (project && project.address) || '',
+    project_city:    (project && project.city) || '',
+    project_state:   (project && project.state) || '',
+    contract_price:  fmtMoney(total),
+    sig_client: '', sig_builder: '',  // signature anchors render blank in the doc
+  }, extra || {});
+}
+
+// POST /signwell/send-docx-contract — fill DOCX template, convert to PDF, send via SignWell
+router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
+    const ctype = contract_type || 'client';
+    if(!project_id || !client_email) return res.status(400).json({ error: 'project_id and client_email required' });
+
+    // 1. Load the DOCX template
+    const { data: tmpl } = await supabaseAdmin
+      .from('contract_templates').select('*')
+      .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
+    if(!tmpl || !tmpl.docx_url) return res.status(400).json({ error: 'No DOCX template configured for type: ' + ctype });
+
+    // 2. Download the DOCX
+    const docxRes = await fetch(tmpl.docx_url);
+    if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
+    const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
+
+    // 3. Fill merge tags
+    const data = await buildDocxMergeData({
+      companyId: req.companyId, projectId: project_id,
+      clientName: client_name, clientEmail: client_email,
+      builderUser: req.user, extra: extra_fields,
+    });
+    let filledDocx;
+    try { filledDocx = fillDocx(docxBuffer, data); }
+    catch(e){ return res.status(400).json({ error: 'Template merge failed: ' + (e.message||'check your {{tags}}') }); }
+
+    // 4. Convert to PDF
+    const pdfBuffer = await convertDocxToPdf(filledDocx, 'contract.docx');
+
+    // 5. Upload the PDF
+    const { uploadFile } = require('../lib/storage');
+    const pdfName = `${req.companyId}/${project_id}/${ctype}_${Date.now()}.pdf`;
+    await uploadFile('contracts', pdfName, pdfBuffer, 'application/pdf');
+    const { data: pdfUrlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(pdfName);
+    const fileUrl = pdfUrlData.publicUrl;
+
+    // 6. Create the contract record
+    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', subcontractor:'Subcontractor Agreement', change_order:'Change Order Authorization' };
+    const title = titleMap[ctype] || 'Contract';
+    const { data: contractRow } = await supabaseAdmin.from('contracts').insert({
+      project_id, title, status:'draft', created_by: req.userId, contract_type: ctype, contracted_amount: 0, pdf_url: fileUrl,
+    }).select().single();
+
+    // 7. Send to SignWell
+    const builderName = ((req.user.first_name||'')+' '+(req.user.last_name||'')).trim();
+    const swRes = await fetch(SIGNWELL_API+'/documents', {
+      method:'POST',
+      headers:{ 'X-Api-Key': SW_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        test_mode: false,
+        name: title + ' — ' + (client_name||''),
+        files: [{ name:'contract.pdf', file_url: fileUrl }],
+        recipients: [
+          { id:'1', name: client_name || 'Client', email: client_email },
+          { id:'2', name: builderName || 'Builder', email: req.user.email },
+        ],
+        embedded_signing: true, reminder_enabled: true, apply_signing_order: true,
+        fields: [[
+          { api_id:'sig_client',  type:'signature', page:-1, x:75,  y:690, required:true, recipient_id:'1' },
+          { api_id:'date_client', type:'date',      page:-1, x:75,  y:720, required:true, recipient_id:'1' },
+          { api_id:'sig_builder', type:'signature', page:-1, x:320, y:690, required:true, recipient_id:'2' },
+          { api_id:'date_builder',type:'date',      page:-1, x:320, y:720, required:true, recipient_id:'2' },
+        ]],
+      }),
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
+
+    let signingUrl = null;
+    if(Array.isArray(swData.recipients)){
+      const r = swData.recipients.find(x=>x.id==='1') || swData.recipients[0];
+      signingUrl = r ? (r.embedded_signing_url || r.signing_url) : null;
+    }
+    if(contractRow){
+      await supabaseAdmin.from('contracts').update({
+        status:'sent', sent_at:new Date().toISOString(),
+        signwell_document_id: swData.id, signing_url: signingUrl, recipient_email: client_email, pdf_url: fileUrl,
+      }).eq('id', contractRow.id);
+    }
+    res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
+  } catch(e){
+    console.error('[SignWell send-docx-contract] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
