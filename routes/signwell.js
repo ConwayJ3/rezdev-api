@@ -381,15 +381,21 @@ router.post('/templates/upload-docx', requireAuth, requireRole('owner','builder'
     const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
     const docxUrl = urlData.publicUrl;
 
-    // Upsert the contract_templates record (docx path)
+    // Upsert: the uploaded file is the PRISTINE ORIGINAL. Reset tag_rules/fill_fields
+    // because a fresh upload starts tagging over. docx_url mirrors the original here;
+    // the tagged render is produced on demand from original + tag_rules.
     const { data, error } = await supabaseAdmin
       .from('contract_templates')
       .upsert({
-        company_id:    req.companyId,
-        contract_type: contractType,
-        template_name: templateName,
-        docx_url:      docxUrl,
-        docx_path:     storagePath,
+        company_id:         req.companyId,
+        contract_type:      contractType,
+        template_name:      templateName,
+        docx_url:           docxUrl,
+        docx_path:          storagePath,
+        original_docx_url:  docxUrl,
+        original_docx_path: storagePath,
+        tag_rules:          [],
+        fill_fields:        [],
       }, { onConflict: 'company_id,contract_type' })
       .select().single();
     if(error) return res.status(400).json({ error: error.message });
@@ -470,25 +476,25 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     const ctype = contract_type || 'client';
     if(!project_id || !client_email) return res.status(400).json({ error: 'project_id and client_email required' });
 
-    // 1. Load the DOCX template
+    // 1. Load the template
     const { data: tmpl } = await supabaseAdmin
       .from('contract_templates').select('*')
       .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
-    if(!tmpl || !tmpl.docx_url) return res.status(400).json({ error: 'No DOCX template configured for type: ' + ctype });
+    if(!tmpl || (!tmpl.original_docx_url && !tmpl.docx_url)) return res.status(400).json({ error: 'No DOCX template configured for type: ' + ctype });
 
-    // 2. Download the DOCX
-    const docxRes = await fetch(tmpl.docx_url);
-    if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
-    const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
+    // 2. Render the tagged DOCX fresh from the pristine original + saved tag_rules
+    let taggedBuffer;
+    try { taggedBuffer = await renderTaggedDocx(tmpl); }
+    catch(e){ return res.status(400).json({ error: 'Could not render template: ' + e.message }); }
 
-    // 3. Fill merge tags
+    // 3. Fill merge tags with real data
     const data = await buildDocxMergeData({
       companyId: req.companyId, projectId: project_id,
       clientName: client_name, clientEmail: client_email,
       builderUser: req.user, extra: extra_fields,
     });
     let filledDocx;
-    try { filledDocx = fillDocx(docxBuffer, data); }
+    try { filledDocx = fillDocx(taggedBuffer, data); }
     catch(e){ return res.status(400).json({ error: 'Template merge failed: ' + (e.message||'check your {{tags}}') }); }
 
     // 3b. Convert signature markers (##SIG_CLIENT## etc.) into SignWell text tags
@@ -556,65 +562,66 @@ router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'),
     const { data: tmpl } = await supabaseAdmin
       .from('contract_templates').select('*')
       .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
-    if(!tmpl || !tmpl.docx_url) return res.status(404).json({ error: 'No DOCX template uploaded for this type' });
+    if(!tmpl || (!tmpl.original_docx_url && !tmpl.docx_url)) return res.status(404).json({ error: 'No DOCX template uploaded for this type' });
 
-    const docxRes = await fetch(tmpl.docx_url);
+    // Always read the PRISTINE ORIGINAL text (tags are never baked in)
+    const origUrl = tmpl.original_docx_url || tmpl.docx_url;
+    const docxRes = await fetch(origUrl);
     if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
     const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
 
     const mammoth = require('mammoth');
-    // Plain text (for tagging/selection) and HTML (for display fidelity)
     const textResult = await mammoth.extractRawText({ buffer: docxBuffer });
-    const htmlResult = await mammoth.convertToHtml({ buffer: docxBuffer });
 
     res.json({
       success: true,
       contract_type: ctype,
       text: textResult.value || '',
-      html: htmlResult.value || '',
-      has_existing_tags: /\{\{\s*[a-zA-Z0-9_]+\s*\}\}/.test(textResult.value || ''),
+      tag_rules: Array.isArray(tmpl.tag_rules) ? tmpl.tag_rules : [],
+      fill_fields: Array.isArray(tmpl.fill_fields) ? tmpl.fill_fields : [],
     });
   } catch(e){
     res.status(500).json({ error: e.message });
   }
 });
 
-// POST /signwell/templates/:type/apply-tags — apply tagging rules into the stored DOCX
-// Body: { rules: [{ find: "John Smith", tag: "client_name", all: false, occurrence_count: 1 }, ...] }
+// Render a tagged DOCX buffer from the pristine original + the saved tag_rules.
+// This is the single source of truth: original never changes; tags are data.
+async function renderTaggedDocx(tmpl){
+  const origUrl = tmpl.original_docx_url || tmpl.docx_url;
+  const docxRes = await fetch(origUrl);
+  if(!docxRes.ok) throw new Error('Could not download original template DOCX');
+  const originalBuffer = Buffer.from(await docxRes.arrayBuffer());
+  const rules = Array.isArray(tmpl.tag_rules) ? tmpl.tag_rules : [];
+  if(!rules.length) return originalBuffer;
+  return applyTagsToDocx(originalBuffer, rules);
+}
+
+// POST /signwell/templates/:type/apply-tags — SAVE tagging rules (does not mutate original).
+// Body: { rules: [ {find, occurrence_index, all, occurrence_count, mode, tag, raw_replace, label, field_type, key} ... ] }
+// The full rules array REPLACES the stored one (frontend sends the complete current set).
 router.post('/templates/:type/apply-tags', requireAuth, requireRole('owner','builder'), async (req, res) => {
   try {
     const ctype = req.params.type;
     const rules = Array.isArray(req.body.rules) ? req.body.rules : [];
-    if(!rules.length) return res.status(400).json({ error: 'No tagging rules provided' });
 
     const { data: tmpl } = await supabaseAdmin
       .from('contract_templates').select('*')
       .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
-    if(!tmpl || !tmpl.docx_url) return res.status(404).json({ error: 'No DOCX template for this type' });
+    if(!tmpl || (!tmpl.original_docx_url && !tmpl.docx_url)) return res.status(404).json({ error: 'No DOCX template for this type' });
 
-    // Download current DOCX
-    const docxRes = await fetch(tmpl.docx_url);
-    if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
-    const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
+    // Derive fill_fields from the fill-type rules (single source: the rules)
+    const fillFields = rules
+      .filter(r => r.mode === 'fill' && r.key)
+      .map(r => ({ key: r.key, label: r.label || r.key, type: r.field_type || 'text' }));
+    // dedupe by key
+    const byKey = {}; fillFields.forEach(f => { byKey[f.key] = f; });
 
-    // Apply the tagging rules into the DOCX (formatting preserved)
-    const tagged = applyTagsToDocx(docxBuffer, rules);
-
-    // Save the tagged DOCX back (new versioned filename)
-    const { uploadFile } = require('../lib/storage');
-    const fileName = `${req.companyId}/templates/${ctype}_tagged_${Date.now()}.docx`;
-    const storagePath = await uploadFile('contracts', fileName, tagged,
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
-    const newUrl = urlData.publicUrl;
-
-    const updatePayload = { docx_url: newUrl, docx_path: storagePath };
-    if(Array.isArray(req.body.fill_fields)) updatePayload.fill_fields = req.body.fill_fields;
     await supabaseAdmin.from('contract_templates')
-      .update(updatePayload)
+      .update({ tag_rules: rules, fill_fields: Object.values(byKey) })
       .eq('company_id', req.companyId).eq('contract_type', ctype);
 
-    res.json({ success: true, docx_url: newUrl, applied: rules.length });
+    res.json({ success: true, saved_rules: rules.length });
   } catch(e){
     res.status(500).json({ error: e.message });
   }
