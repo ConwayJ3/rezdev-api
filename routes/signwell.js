@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const SIGNWELL_API = 'https://www.signwell.com/api/v1';
 const SW_KEY = process.env.SIGNWELL_API_KEY;
 const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
-const { fillDocx, convertDocxToPdf, applyTagsToDocx } = require('../lib/docxContract');
+const { fillDocx, convertDocxToPdf, applyTagsToDocx, applySignatureAnchors } = require('../lib/docxContract');
 const { uploadFile } = require('../lib/storage');
 
 // POST /signwell/send
@@ -490,6 +490,9 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     try { filledDocx = fillDocx(docxBuffer, data); }
     catch(e){ return res.status(400).json({ error: 'Template merge failed: ' + (e.message||'check your {{tags}}') }); }
 
+    // 3b. Convert signature markers (##SIG_CLIENT## etc.) into SignWell text tags
+    filledDocx = applySignatureAnchors(filledDocx);
+
     // 4. Convert to PDF
     const pdfBuffer = await convertDocxToPdf(filledDocx, 'contract.docx');
 
@@ -521,12 +524,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
           { id:'2', name: builderName || 'Builder', email: req.user.email },
         ],
         embedded_signing: true, reminder_enabled: true, apply_signing_order: true,
-        fields: [[
-          { api_id:'sig_client',  type:'signature', page:-1, x:75,  y:690, required:true, recipient_id:'1' },
-          { api_id:'date_client', type:'date',      page:-1, x:75,  y:720, required:true, recipient_id:'1' },
-          { api_id:'sig_builder', type:'signature', page:-1, x:320, y:690, required:true, recipient_id:'2' },
-          { api_id:'date_builder',type:'date',      page:-1, x:320, y:720, required:true, recipient_id:'2' },
-        ]],
+        text_tags: true,
       }),
     });
     const swData = await swRes.json();
