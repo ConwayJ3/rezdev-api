@@ -339,15 +339,16 @@ router.post('/templates/create', requireAuth, requireRole('owner','builder'), as
   }
 });
 
-// GET /signwell/templates — get all templates for this company
+// GET /signwell/templates — get all templates for this company (DOCX-based)
 router.get('/templates', requireAuth, async (req, res) => {
   try {
+    // Read from contract_templates (DOCX flow) — has docx_url + fill_fields
     const { data, error } = await supabaseAdmin
-      .from('signwell_templates')
+      .from('contract_templates')
       .select('*')
       .eq('company_id', req.companyId);
     if(error) return res.status(400).json({ error: error.message });
-    res.json(data);
+    res.json(data || []);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
