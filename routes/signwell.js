@@ -273,11 +273,13 @@ router.post('/webhook', async (req, res) => {
       await supabaseAdmin.from('contracts').update({ status: 'declined', declined_at: new Date().toISOString() }).eq('signwell_document_id', docId);
     } else if(type === 'document_signed'){
       // A single signer completed (sequential order: client first, then builder).
-      // Advance to 'partially_signed' so the UI can show "awaiting builder".
-      await supabaseAdmin.from('contracts')
+      // Advance to 'partially_signed' unless already fully signed.
+      const { data: upd, error: updErr } = await supabaseAdmin.from('contracts')
         .update({ status: 'partially_signed' })
         .eq('signwell_document_id', docId)
-        .in('status', ['sent','viewed']);
+        .neq('status', 'signed')
+        .select('id, status');
+      console.log('[SignWell] document_signed update ->', JSON.stringify(upd), updErr ? ('err:'+updErr.message) : '');
     }
     res.json({ received: true });
   } catch(e) {
