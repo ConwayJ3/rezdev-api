@@ -681,4 +681,31 @@ router.get('/my-contracts/:projectId', requireAuth, async (req, res) => {
   }
 });
 
+// GET /signwell/builder-signing-url/:contractId — fetch the builder's (recipient 2) embedded signing URL
+router.get('/builder-signing-url/:contractId', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { data: contract } = await supabaseAdmin
+      .from('contracts').select('signwell_document_id')
+      .eq('id', req.params.contractId).maybeSingle();
+    if(!contract || !contract.signwell_document_id) return res.status(404).json({ error: 'Contract or SignWell document not found' });
+
+    const swRes = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}`, {
+      headers: { 'X-Api-Key': SW_KEY },
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error' });
+
+    // Recipient id '2' is the builder
+    let url = null;
+    if(Array.isArray(swData.recipients)){
+      const b = swData.recipients.find(r => r.id === '2') || swData.recipients[1];
+      url = b ? (b.embedded_signing_url || b.signing_url) : null;
+    }
+    if(!url) return res.status(404).json({ error: 'Builder signing URL not available yet (client may still need to sign first)' });
+    res.json({ signing_url: url });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
