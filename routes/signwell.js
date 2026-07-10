@@ -505,6 +505,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
   try {
     const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
     const ctype = contract_type || 'client';
+    const providedTitle = (req.body.title || '').trim();
     if(!project_id || !client_email) return res.status(400).json({ error: 'project_id and client_email required' });
 
     // 1. Load the template
