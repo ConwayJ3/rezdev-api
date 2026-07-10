@@ -243,11 +243,16 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
 
 router.post('/webhook', async (req, res) => {
   try {
-    const event = req.body;
-    const type = event.event_type || event.type;
-    console.log('[SignWell] Webhook:', type);
-    const doc = event.data || {};
-    const docId = doc.id || doc.object?.id;
+    const event = req.body || {};
+    // Log the full payload once so we can see SignWell's exact structure
+    console.log('[SignWell] Webhook RAW:', JSON.stringify(event).slice(0, 800));
+    // SignWell nests the event under different keys depending on version — check all
+    const type = event.event_type || event.type
+              || (event.event && (event.event.type || event.event.event_type))
+              || (event.data && event.data.event_type);
+    console.log('[SignWell] Webhook type:', type);
+    const doc = event.data || (event.event && event.event.data) || {};
+    const docId = doc.id || (doc.object && doc.object.id) || (event.data && event.data.object && event.data.object.id);
     if(!docId){ return res.json({ received: true }); }
 
     if(type === 'document_completed'){
