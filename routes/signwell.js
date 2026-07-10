@@ -271,8 +271,12 @@ router.post('/webhook', async (req, res) => {
     } else if(type === 'document_declined'){
       await supabaseAdmin.from('contracts').update({ status: 'declined', declined_at: new Date().toISOString() }).eq('signwell_document_id', docId);
     } else if(type === 'document_signed'){
-      // A single signer completed (sequential). Keep as 'sent' until fully completed,
-      // but you could track partial progress here if desired.
+      // A single signer completed (sequential order: client first, then builder).
+      // Advance to 'partially_signed' so the UI can show "awaiting builder".
+      await supabaseAdmin.from('contracts')
+        .update({ status: 'partially_signed' })
+        .eq('signwell_document_id', docId)
+        .in('status', ['sent','viewed']);
     }
     res.json({ received: true });
   } catch(e) {
