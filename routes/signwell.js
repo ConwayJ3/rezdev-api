@@ -244,14 +244,35 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
 router.post('/webhook', async (req, res) => {
   try {
     const event = req.body;
-    console.log('[SignWell] Webhook:', event.event_type);
-    if(event.event_type === 'document_completed') {
-      const docId = event.data?.id;
-      if(docId) await supabaseAdmin.from('contracts').update({ status: 'signed', signed_at: new Date().toISOString() }).eq('signwell_document_id', docId);
+    const type = event.event_type || event.type;
+    console.log('[SignWell] Webhook:', type);
+    const doc = event.data || {};
+    const docId = doc.id || doc.object?.id;
+    if(!docId){ return res.json({ received: true }); }
+
+    if(type === 'document_completed'){
+      // Fetch the completed PDF URL from SignWell
+      let signedUrl = null;
+      try {
+        const r = await fetch(`${SIGNWELL_API}/documents/${docId}/completed_pdf`, { headers: { 'X-Api-Key': SW_KEY } });
+        if(r.ok){ const j = await r.json(); signedUrl = j.file_url || j.url || null; }
+      } catch(e){ /* non-fatal */ }
+      await supabaseAdmin.from('contracts').update({
+        status: 'signed', signed_at: new Date().toISOString(),
+        ...(signedUrl ? { signed_pdf_url: signedUrl } : {}),
+      }).eq('signwell_document_id', docId);
+    } else if(type === 'document_viewed'){
+      await supabaseAdmin.from('contracts').update({ status: 'viewed', viewed_at: new Date().toISOString() }).eq('signwell_document_id', docId).eq('status','sent');
+    } else if(type === 'document_declined'){
+      await supabaseAdmin.from('contracts').update({ status: 'declined', declined_at: new Date().toISOString() }).eq('signwell_document_id', docId);
+    } else if(type === 'document_signed'){
+      // A single signer completed (sequential). Keep as 'sent' until fully completed,
+      // but you could track partial progress here if desired.
     }
     res.json({ received: true });
   } catch(e) {
-    res.status(500).json({ error: e.message });
+    console.error('[SignWell webhook] error:', e.message);
+    res.status(200).json({ received: true, error: e.message }); // 200 so SignWell doesn't retry-storm
   }
 });
 
