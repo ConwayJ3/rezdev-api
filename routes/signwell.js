@@ -134,6 +134,7 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
   try {
     const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
     const ctype = contract_type || 'client';
+    const providedTitle = (req.body.title || '').trim();
     if(!project_id) return res.status(400).json({ error: 'project_id required' });
     if(!client_email) return res.status(400).json({ error: 'client_email required' });
 
@@ -542,7 +543,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
 
     // 6. Create the contract record
     const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', subcontractor:'Subcontractor Agreement', change_order:'Change Order Authorization' };
-    const title = titleMap[ctype] || 'Contract';
+    const title = providedTitle || titleMap[ctype] || 'Contract';
     const { data: contractRow } = await supabaseAdmin.from('contracts').insert({
       project_id, title, status:'draft', created_by: req.userId, contract_type: ctype, contracted_amount: 0, pdf_url: fileUrl,
     }).select().single();
@@ -554,7 +555,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
       headers:{ 'X-Api-Key': SW_KEY, 'Content-Type':'application/json' },
       body: JSON.stringify({
         test_mode: false,
-        name: title + ' — ' + (client_name||''),
+        name: title,
         files: [{ name:'contract.pdf', file_url: fileUrl }],
         recipients: [
           { id:'1', name: client_name || 'Client', email: client_email },
@@ -706,6 +707,15 @@ router.get('/builder-signing-url/:contractId', requireAuth, requireRole('owner',
   } catch(e){
     res.status(500).json({ error: e.message });
   }
+});
+
+// DELETE /signwell/contracts/:id — delete a contract (builder/owner/pm)
+router.delete('/contracts/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from('contracts').delete().eq('id', req.params.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ success: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;
