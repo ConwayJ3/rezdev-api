@@ -627,4 +627,28 @@ router.post('/templates/:type/apply-tags', requireAuth, requireRole('owner','bui
   }
 });
 
+// GET /signwell/my-contracts/:projectId — contracts for the logged-in client on a project
+router.get('/my-contracts/:projectId', requireAuth, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    // Resolve the client's email (from their profile)
+    const clientEmail = (req.user && req.user.email) || '';
+    const { data, error } = await supabaseAdmin
+      .from('contracts')
+      .select('id, title, status, contract_type, signing_url, pdf_url, signed_pdf_url, recipient_email, sent_at, signed_at, created_at')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+    // Only return contracts addressed to this client (by recipient_email), or all if builder/pm/owner
+    const role = req.userRole;
+    let rows = data || [];
+    if(role === 'client'){
+      rows = rows.filter(r => (r.recipient_email||'').toLowerCase() === clientEmail.toLowerCase());
+    }
+    res.json(rows);
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
