@@ -797,4 +797,40 @@ router.get('/my-contracts', requireAuth, async (req, res) => {
   }
 });
 
+// GET /signwell/my-signing-url/:contractId — fetch the CURRENT embedded signing URL
+// for the logged-in recipient (recipient 1). Fetched fresh because stored URLs can expire.
+router.get('/my-signing-url/:contractId', requireAuth, async (req, res) => {
+  try {
+    const email = ((req.user && req.user.email) || '').toLowerCase();
+    const { data: contract } = await supabaseAdmin
+      .from('contracts').select('id, signwell_document_id, recipient_email')
+      .eq('id', req.params.contractId).maybeSingle();
+    if(!contract || !contract.signwell_document_id) return res.status(404).json({ error: 'Contract not found' });
+    // Only the addressed recipient (or a builder/pm/owner) may fetch it
+    const role = req.userRole;
+    const isRecipient = (contract.recipient_email||'').toLowerCase() === email;
+    if(!isRecipient && !['owner','builder','pm'].includes(role)) return res.status(403).json({ error: 'Not your contract' });
+
+    const swRes = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}`, {
+      headers: { 'X-Api-Key': SW_KEY },
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error' });
+
+    // Find the recipient whose email matches (fallback to recipient id 1)
+    let url = null;
+    if(Array.isArray(swData.recipients)){
+      const match = swData.recipients.find(r => (r.email||'').toLowerCase() === email)
+                 || swData.recipients.find(r => r.id === '1')
+                 || swData.recipients[0];
+      url = match ? (match.embedded_signing_url || match.signing_url) : null;
+      console.log('[SigningURL] recipient:', match && match.id, '| embedded:', !!(match && match.embedded_signing_url));
+    }
+    if(!url) return res.status(404).json({ error: 'Signing URL not available' });
+    res.json({ signing_url: url });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
