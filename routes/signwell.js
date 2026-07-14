@@ -741,19 +741,18 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
       return res.json({ url: contract.pdf_url || null, signed: false });
     }
 
-    // Ask SignWell for the current document state
-    const r = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}`, {
+    // Use the dedicated Completed PDF endpoint with url_only=true (returns a URL, not binary)
+    const r = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}/completed_pdf?url_only=true`, {
       headers: { 'X-Api-Key': SW_KEY },
     });
     if(!r.ok){
-      console.log('[SignedPDF] SignWell GET failed:', r.status);
+      const t = await r.text();
+      console.log('[SignedPDF] completed_pdf failed:', r.status, t.slice(0,200));
       return res.json({ url: contract.pdf_url || null, signed: false });
     }
     const j = await r.json();
-    console.log('[SignedPDF] status:', j.status, '| completed_pdf_url:', j.completed_pdf_url, '| files:', JSON.stringify(j.files||[]).slice(0,300));
-    const signedUrl = j.completed_pdf_url
-      || (Array.isArray(j.files) && j.files[0] && (j.files[0].url || j.files[0].file_url))
-      || null;
+    console.log('[SignedPDF] completed_pdf response:', JSON.stringify(j).slice(0,300));
+    const signedUrl = j.file_url || j.url || j.pdf_url || null;
 
     if(signedUrl){
       // Cache it so we don't hit SignWell every view
