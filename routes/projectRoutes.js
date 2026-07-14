@@ -401,7 +401,39 @@ publicRfpRouter.get('/:token', async (req, res) => {
       .eq('public_token', req.params.token)
       .single();
     if(error || !data) return res.status(404).json({ error: 'RFP not found' });
-    res.json(data);
+
+    // Bidders are unauthenticated, so the RFP payload must CARRY everything they need.
+    // 1. The company's contractor agreement (the pristine original template)
+    let agreement = null;
+    try {
+      const { data: tmpl } = await supabaseAdmin
+        .from('contract_templates')
+        .select('template_name, original_docx_url, docx_url')
+        .eq('company_id', data.company_id)
+        .eq('contract_type', 'contractor')
+        .maybeSingle();
+      const url = tmpl && (tmpl.original_docx_url || tmpl.docx_url);
+      if(url) agreement = { name: (tmpl.template_name || 'Contractor Agreement'), url };
+    } catch(e){ /* no agreement configured */ }
+
+    // 2. Project files shared with this RFP (signed URLs — bidders are unauthenticated)
+    let files = [];
+    try {
+      const { data: pf } = await supabaseAdmin
+        .from('project_files')
+        .select('id, name, storage_url, file_size, mime_type')
+        .eq('project_id', data.project_id)
+        .order('uploaded_at', { ascending: false });
+      const { getSignedUrl } = require('../lib/storage');
+      files = await Promise.all((pf||[]).map(async f => {
+        let url = null;
+        try { url = await getSignedUrl('files', f.storage_url); } catch(e){}
+        return { id: f.id, name: f.name, size: f.file_size, mime_type: f.mime_type, url };
+      }));
+      files = files.filter(f => f.url);
+    } catch(e){ /* no files */ }
+
+    res.json(Object.assign({}, data, { agreement, files }));
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
