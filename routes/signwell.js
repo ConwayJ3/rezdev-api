@@ -725,4 +725,41 @@ router.delete('/contracts/:id', requireAuth, requireRole('owner','builder','pm')
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// GET /signwell/signed-pdf/:contractId — fetch (and cache) the completed PDF URL from SignWell.
+// Done on demand because completed_pdf_url is often not ready at webhook time.
+router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
+  try {
+    const { data: contract } = await supabaseAdmin
+      .from('contracts').select('id, signwell_document_id, signed_pdf_url, pdf_url, status')
+      .eq('id', req.params.contractId).maybeSingle();
+    if(!contract) return res.status(404).json({ error: 'Contract not found' });
+
+    // Already cached
+    if(contract.signed_pdf_url) return res.json({ url: contract.signed_pdf_url, signed: true });
+
+    if(!contract.signwell_document_id){
+      return res.json({ url: contract.pdf_url || null, signed: false });
+    }
+
+    // Ask SignWell for the current document state
+    const r = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}`, {
+      headers: { 'X-Api-Key': SW_KEY },
+    });
+    if(!r.ok) return res.json({ url: contract.pdf_url || null, signed: false });
+    const j = await r.json();
+    const signedUrl = j.completed_pdf_url
+      || (Array.isArray(j.files) && j.files[0] && (j.files[0].url || j.files[0].file_url))
+      || null;
+
+    if(signedUrl){
+      // Cache it so we don't hit SignWell every view
+      await supabaseAdmin.from('contracts').update({ signed_pdf_url: signedUrl }).eq('id', contract.id);
+      return res.json({ url: signedUrl, signed: true });
+    }
+    res.json({ url: contract.pdf_url || null, signed: false });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
