@@ -734,8 +734,10 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
       .eq('id', req.params.contractId).maybeSingle();
     if(!contract) return res.status(404).json({ error: 'Contract not found' });
 
-    // Already cached
-    if(contract.signed_pdf_url) return res.json({ url: contract.signed_pdf_url, signed: true });
+    // Already cached — but only trust URLs we host ourselves (SignWell URLs can't be iframed)
+    if(contract.signed_pdf_url && !/signwell\.com/i.test(contract.signed_pdf_url)){
+      return res.json({ url: contract.signed_pdf_url, signed: true });
+    }
 
     if(!contract.signwell_document_id){
       return res.json({ url: contract.pdf_url || null, signed: false });
