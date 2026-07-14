@@ -204,6 +204,18 @@ router.post('/banking', requireAuth, async (req, res) => {
 module.exports = router;
 
 // ── Company routes ────────────────────────────────────
+// GET /companies/me — the logged-in user's company record
+router.get('/companies/me', async (req, res) => {
+  try {
+    if(!req.companyId) return res.status(400).json({ error: 'No company for this user' });
+    const { data, error } = await supabaseAdmin
+      .from('companies').select('*').eq('id', req.companyId).maybeSingle();
+    if(error) return res.status(400).json({ error: error.message });
+    if(!data) return res.status(404).json({ error: 'Company not found' });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // PUT /companies/:id
 router.put('/companies/:id', async (req, res) => {
   if(!req.user || !['owner','builder'].includes(req.userRole)){
