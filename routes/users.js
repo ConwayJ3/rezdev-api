@@ -205,7 +205,7 @@ module.exports = router;
 
 // ── Company routes ────────────────────────────────────
 // GET /companies/me — the logged-in user's company record
-router.get('/companies/me', async (req, res) => {
+router.get('/companies/me', requireAuth, async (req, res) => {
   try {
     if(!req.companyId) return res.status(400).json({ error: 'No company for this user' });
     const { data, error } = await supabaseAdmin
@@ -217,7 +217,7 @@ router.get('/companies/me', async (req, res) => {
 });
 
 // PUT /companies/:id
-router.put('/companies/:id', async (req, res) => {
+router.put('/companies/:id', requireAuth, async (req, res) => {
   if(!req.user || !['owner','builder'].includes(req.userRole)){
     return res.status(403).json({ error: 'Not authorized' });
   }
