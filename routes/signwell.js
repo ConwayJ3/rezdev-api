@@ -135,6 +135,10 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
     const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
     const ctype = contract_type || 'client';
     const providedTitle = (req.body.title || '').trim();
+    console.log('[SendDocx] body ->', JSON.stringify({
+      contract_type, client_name, client_email, title: providedTitle,
+      builder_email: req.user && req.user.email,
+    }));
     if(!project_id) return res.status(400).json({ error: 'project_id required' });
     if(!client_email) return res.status(400).json({ error: 'client_email required' });
 
