@@ -473,9 +473,19 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
     company_email:   (company && company.email) || '',
     company_license: (company && (company.license_number||company.license)) || '',
     builder_name:    builderName,
-    // Client
+    // Recipient (whoever the contract is sent to — client, contractor, etc.)
+    recipient_name:  clientName || '',
+    recipient_email: clientEmail || '',
+    // Client (aliases — kept for existing templates)
     client_name:     clientName || '',
     client_email:    clientEmail || '',
+    // Contractor (aliases so contractor/subcontractor templates read naturally)
+    contractor_name:  clientName || '',
+    contractor_email: clientEmail || '',
+    // Contract-specific values supplied at send time (scope, amount, trade, etc.)
+    contract_amount:  (extra && extra.contract_amount) || '',
+    scope_of_work:    (extra && extra.scope_of_work) || '',
+    trade:            (extra && extra.trade) || '',
     // Project
     project_name:    (project && project.name) || '',
     project_address: (project && project.address) || '',
