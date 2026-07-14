@@ -522,7 +522,13 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
     const ctype = contract_type || 'client';
     const providedTitle = (req.body.title || '').trim();
-    if(!project_id || !client_email) return res.status(400).json({ error: 'project_id and client_email required' });
+    if(!project_id) return res.status(400).json({ error: 'project_id required' });
+    if(!client_email || !client_email.trim()){
+      return res.status(400).json({ error: 'The selected recipient has no email address on file. Add their email before sending.' });
+    }
+    if(!req.user || !req.user.email){
+      return res.status(400).json({ error: 'Your account has no email address — cannot add you as a signer.' });
+    }
 
     // 1. Load the template
     const { data: tmpl } = await supabaseAdmin
