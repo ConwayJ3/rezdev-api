@@ -780,4 +780,21 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
   }
 });
 
+// GET /signwell/my-contracts — ALL contracts addressed to the logged-in user (across projects)
+router.get('/my-contracts', requireAuth, async (req, res) => {
+  try {
+    const email = ((req.user && req.user.email) || '').toLowerCase();
+    if(!email) return res.json([]);
+    const { data, error } = await supabaseAdmin
+      .from('contracts')
+      .select('id, title, status, contract_type, signing_url, pdf_url, signed_pdf_url, recipient_email, sent_at, signed_at, created_at, project_id, projects(name, address)')
+      .ilike('recipient_email', email)
+      .order('created_at', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+    res.json(data || []);
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
