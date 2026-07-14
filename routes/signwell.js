@@ -741,8 +741,9 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
       return res.json({ url: contract.pdf_url || null, signed: false });
     }
 
-    // Use the dedicated Completed PDF endpoint with url_only=true (returns a URL, not binary)
-    const r = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}/completed_pdf?url_only=true`, {
+    // Download the completed PDF BINARY from SignWell, then store it in our own storage.
+    // (SignWell's own URLs block iframe embedding, and we want an archived copy anyway.)
+    const r = await fetch(`${SIGNWELL_API}/documents/${contract.signwell_document_id}/completed_pdf`, {
       headers: { 'X-Api-Key': SW_KEY },
     });
     if(!r.ok){
@@ -750,16 +751,18 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
       console.log('[SignedPDF] completed_pdf failed:', r.status, t.slice(0,200));
       return res.json({ url: contract.pdf_url || null, signed: false });
     }
-    const j = await r.json();
-    console.log('[SignedPDF] completed_pdf response:', JSON.stringify(j).slice(0,300));
-    const signedUrl = j.file_url || j.url || j.pdf_url || null;
+    const pdfBuffer = Buffer.from(await r.arrayBuffer());
+    console.log('[SignedPDF] downloaded signed PDF bytes:', pdfBuffer.length);
+    if(!pdfBuffer.length) return res.json({ url: contract.pdf_url || null, signed: false });
 
-    if(signedUrl){
-      // Cache it so we don't hit SignWell every view
-      await supabaseAdmin.from('contracts').update({ signed_pdf_url: signedUrl }).eq('id', contract.id);
-      return res.json({ url: signedUrl, signed: true });
-    }
-    res.json({ url: contract.pdf_url || null, signed: false });
+    const { uploadFile } = require('../lib/storage');
+    const fileName = `${req.companyId}/signed/${contract.id}_signed.pdf`;
+    const storagePath = await uploadFile('contracts', fileName, pdfBuffer, 'application/pdf');
+    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
+    const signedUrl = urlData.publicUrl;
+
+    await supabaseAdmin.from('contracts').update({ signed_pdf_url: signedUrl }).eq('id', contract.id);
+    res.json({ url: signedUrl, signed: true });
   } catch(e){
     res.status(500).json({ error: e.message });
   }
