@@ -257,12 +257,16 @@ router.post('/webhook', async (req, res) => {
     if(!docId){ return res.json({ received: true }); }
 
     if(type === 'document_completed'){
-      // Fetch the completed PDF URL from SignWell
+      // Per SignWell docs: GET /documents/{id} returns completed_pdf_url once signing is complete.
       let signedUrl = null;
       try {
-        const r = await fetch(`${SIGNWELL_API}/documents/${docId}/completed_pdf`, { headers: { 'X-Api-Key': SW_KEY } });
-        if(r.ok){ const j = await r.json(); signedUrl = j.file_url || j.url || null; }
-      } catch(e){ /* non-fatal */ }
+        const r = await fetch(`${SIGNWELL_API}/documents/${docId}`, { headers: { 'X-Api-Key': SW_KEY } });
+        if(r.ok){
+          const j = await r.json();
+          signedUrl = j.completed_pdf_url || j.pdf_url || (Array.isArray(j.files) && j.files[0] && (j.files[0].url || j.files[0].file_url)) || null;
+          console.log('[SignWell] completed_pdf_url ->', signedUrl);
+        }
+      } catch(e){ console.log('[SignWell] completed pdf fetch failed:', e.message); }
       await supabaseAdmin.from('contracts').update({
         status: 'signed', signed_at: new Date().toISOString(),
         ...(signedUrl ? { signed_pdf_url: signedUrl } : {}),
