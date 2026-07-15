@@ -45,9 +45,10 @@ app.use('/auth', authLimiter);
 const signwellRouter = require('./routes/signwell');
 const contractTemplateRoutes = require('./routes/contractTemplates');
 const driveRouter    = require('./routes/drive');
-app.use(generalLimiter);
-
 // ── Security & Parsing ────────────────────────────────────────────
+// CORS must run BEFORE the rate limiter so that 429 responses still carry
+// Access-Control-Allow-Origin headers — otherwise a rate-limit rejection shows
+// up in the browser as a misleading "CORS error" instead of "429 rate limited".
 app.use(helmet());
 app.use(cors({
   origin: (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(','),
@@ -55,6 +56,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type','Authorization'],
   credentials: true,
 }));
+app.use(generalLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use('/signwell', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
