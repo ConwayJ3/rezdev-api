@@ -113,7 +113,8 @@ router.get('/:id/download', requireAuth, requireProjectAccess, async (req, res) 
     const url = await getSignedUrl('files', file.storage_url, 300); // 5 min
     res.json({ url, name: file.name, mime_type: file.mime_type });
   } catch(e) {
-    res.status(500).json({ error: 'Could not generate download URL' });
+    console.error('[Files] Signed URL error:', e && (e.message || e), '| path:', file.storage_url);
+    res.status(500).json({ error: 'Could not generate download URL', detail: e && e.message });
   }
 });
 
