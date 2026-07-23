@@ -75,7 +75,10 @@ selRouter.post('/:itemName/images', requireAuth, requireRole('owner','builder'),
   const uploaded = [];
   for(const file of req.files||[]) {
     const path = `${req.params.projectId}/${sel.id}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.-]/g,'_')}`;
-    const storagePath = await uploadFile('selections', path, file.buffer, file.mimetype).catch(()=>null);
+    const storagePath = await uploadFile('selections', path, file.buffer, file.mimetype).catch(function(err){
+      console.error('[Selections] image upload failed:', err && (err.message||err));
+      return null;
+    });
     if(storagePath) {
       const { data } = await supabaseAdmin.from('selection_images').insert({ selection_id: sel.id, storage_url: storagePath, file_name: file.originalname, file_size: file.size }).select().single();
       if(data) uploaded.push(data);
