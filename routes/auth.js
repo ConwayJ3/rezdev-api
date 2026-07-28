@@ -213,4 +213,53 @@ router.post('/invite-client', requireAuth, async (req, res) => {
   }
 });
 
+// POST /auth/resend-client-invite — regenerate a set-password link for an EXISTING
+// user and email it again. Unlike /invite-client this never creates an account,
+// so it works for someone who was already invited but never finished setup.
+router.post('/resend-client-invite', requireAuth, async (req, res) => {
+  if(!['owner','builder','pm'].includes(req.userRole)) {
+    return res.status(403).json({ error: 'Not authorized to resend invites' });
+  }
+  const { email } = req.body;
+  if(!email) return res.status(400).json({ error: 'email required' });
+
+  try {
+    // Look up the existing profile (for name + role in the email)
+    const { data: profile } = await supabaseAdmin
+      .from('users')
+      .select('first_name, last_name, role')
+      .eq('email', email)
+      .maybeSingle();
+    if(!profile) return res.status(404).json({ error: 'No account found for that email.' });
+
+    const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
+    const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: { redirectTo: appUrl + '/set-password.html' }
+    });
+    if(linkErr) return res.status(400).json({ error: 'Could not generate a new invite link: ' + linkErr.message });
+
+    const setupUrl = (linkData && linkData.properties && linkData.properties.action_link) || (appUrl + '/set-password.html');
+
+    let builderName = '', companyName = '';
+    try {
+      const { data: me } = await supabaseAdmin.from('users').select('first_name,last_name').eq('id', req.userId).maybeSingle();
+      if(me) builderName = [me.first_name, me.last_name].filter(Boolean).join(' ');
+      const { data: co } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      if(co) companyName = co.name;
+    } catch(e){ /* non-fatal */ }
+
+    try {
+      await sendClientInvite({ to: email, clientName: profile.first_name || 'there', builderName, companyName, setupUrl, role: profile.role || 'client' });
+    } catch(emailErr){
+      return res.status(502).json({ error: 'Could not send invite email: ' + emailErr.message });
+    }
+
+    res.json({ success: true, message: 'A fresh invite has been sent to ' + email });
+  } catch(e){
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
