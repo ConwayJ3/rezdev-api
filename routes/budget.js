@@ -71,7 +71,7 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
         project_id:    pid,
         name:          it.name,
         item_type:     it.type || 'fixed',
-        rate:          it.rate || null,
+        rate:          (it.rate === 0 || it.rate) ? it.rate : null,
         quantity:      it.quantity != null ? it.quantity : null,
         budget_amount: it.budget || 0,
         sort_order:    i,
