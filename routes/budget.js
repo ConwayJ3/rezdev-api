@@ -64,7 +64,9 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
 
     if(secErr) continue;
 
-    // Upsert items for this section
+    // Sync items: upsert the incoming ones, then delete any that were removed
+    // on the frontend (upsert alone left deleted items orphaned in the DB).
+    const incomingNames = (sec.items || []).map(it => it.name);
     if(sec.items && sec.items.length) {
       const itemRows = sec.items.map((it, i) => ({
         section_id:    secData.id,
@@ -77,6 +79,15 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
         sort_order:    i,
       }));
       await supabaseAdmin.from('budget_items').upsert(itemRows, { onConflict: 'section_id,project_id,name', ignoreDuplicates: false });
+    }
+    // Remove items no longer present for this section
+    if(incomingNames.length){
+      await supabaseAdmin.from('budget_items').delete()
+        .eq('section_id', secData.id).eq('project_id', pid)
+        .not('name', 'in', '(' + incomingNames.map(n => '"' + String(n).replace(/"/g,'') + '"').join(',') + ')');
+    } else {
+      await supabaseAdmin.from('budget_items').delete()
+        .eq('section_id', secData.id).eq('project_id', pid);
     }
   }
 
