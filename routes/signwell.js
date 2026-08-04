@@ -12,7 +12,8 @@ const { uploadFile } = require('../lib/storage');
 // POST /signwell/send
 router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { contract_id, signer_name, signer_email, contract_type, body } = req.body;
+    const { contract_id, signer_name, signer_email, signer_2_name, signer_2_email, contract_type, body } = req.body;
+    const hasSigner2 = !!(signer_2_email && String(signer_2_email).trim());
     if(!signer_email) return res.status(400).json({ error: 'signer_email required' });
     
     let contract = null;
@@ -57,16 +58,23 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
 
     console.log('[SignWell Send] User:', req.user?.email, 'Company:', req.companyId);
     const recipients = [
-      { id: '1', name: signer_name || 'Recipient', email: signer_email, role: 'signer' },
-      { id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer' },
+      { id: '1', name: signer_name || 'Recipient', email: signer_email, role: 'signer', send_email: false },
     ];
+    if(hasSigner2){
+      // Client 2 signs via an emailed SignWell link (no portal account needed)
+      recipients.push({ id: '3', name: signer_2_name || 'Co-signer', email: signer_2_email, role: 'signer', send_email: true });
+    }
+    recipients.push({ id: '2', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, role: 'signer', send_email: false });
 
     let swRes;
     if(tmplRecord && tmplRecord.signwell_template_id){
       const templateRecipients = [
-        { id: '1', placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email },
-        { id: '2', placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email },
+        { id: '1', placeholder_name: 'Recipient', name: signer_name || 'Recipient', email: signer_email, send_email: false },
       ];
+      if(hasSigner2){
+        templateRecipients.push({ id: '3', placeholder_name: 'Co-signer', name: signer_2_name || 'Co-signer', email: signer_2_email, send_email: true });
+      }
+      templateRecipients.push({ id: '2', placeholder_name: 'Builder', name: req.user.first_name+' '+req.user.last_name, email: req.user.email, send_email: false });
       // Build field data from request body fields object
       const fieldData = req.body.fields || {};
       const templateFields = Object.entries(fieldData).map(([api_id, value]) => ({ api_id, value: String(value||'') }));
