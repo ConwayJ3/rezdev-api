@@ -64,7 +64,13 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
 
     if(secErr) continue;
 
-    // Upsert items for this section
+    // Replace this section's items wholesale: delete all, then insert the incoming set.
+    // NOTE (scale): this is a full delete+insert on every save. Fine at current scale
+    // (tens of items/project). Revisit with a diff-based sync (insert new / update
+    // changed / delete removed) once budget_items are referenced by id elsewhere
+    // (e.g. transactions linking to a specific item id) so ids stay stable.
+    await supabaseAdmin.from('budget_items').delete()
+      .eq('section_id', secData.id).eq('project_id', pid);
     if(sec.items && sec.items.length) {
       const itemRows = sec.items.map((it, i) => ({
         section_id:    secData.id,
@@ -76,7 +82,7 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
         budget_amount: it.budget || 0,
         sort_order:    i,
       }));
-      await supabaseAdmin.from('budget_items').upsert(itemRows, { onConflict: 'section_id,project_id,name', ignoreDuplicates: false });
+      await supabaseAdmin.from('budget_items').insert(itemRows);
     }
   }
 
