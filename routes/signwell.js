@@ -565,7 +565,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     catch(e){ return res.status(400).json({ error: 'Template merge failed: ' + (e.message||'check your {{tags}}') }); }
 
     // 3b. Convert signature markers (##SIG_CLIENT## etc.) into SignWell text tags
-    filledDocx = applySignatureAnchors(filledDocx);
+    filledDocx = applySignatureAnchors(filledDocx, hasClient2);
 
     // 4. Convert to PDF
     const pdfBuffer = await convertDocxToPdf(filledDocx, 'contract.docx');
