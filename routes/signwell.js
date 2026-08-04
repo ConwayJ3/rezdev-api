@@ -492,6 +492,9 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
     // Client (aliases — kept for existing templates)
     client_name:     clientName || '',
     client_email:    clientEmail || '',
+    // Co-signer (second client) — from the request body / project record
+    client_2_name:   (typeof client_2_name !== 'undefined' ? client_2_name : (project && project.client_2_name)) || '',
+    client_2_email:  (typeof client_2_email !== 'undefined' ? client_2_email : (project && project.client_2_email)) || '',
     // Contractor (aliases so contractor/subcontractor templates read naturally)
     contractor_name:  clientName || '',
     contractor_email: clientEmail || '',
