@@ -535,7 +535,8 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
 // POST /signwell/send-docx-contract — fill DOCX template, convert to PDF, send via SignWell
 router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
+    const { project_id, contract_type, client_name, client_email, client_2_name, client_2_email, extra_fields } = req.body;
+    const hasClient2 = !!(client_2_email && String(client_2_email).trim());
     const ctype = contract_type || 'client';
     const providedTitle = (req.body.title || '').trim();
     if(!project_id) return res.status(400).json({ error: 'project_id required' });
