@@ -140,7 +140,8 @@ router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (re
 // template + project data, then send it to SignWell for signature.
 router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { project_id, contract_type, client_name, client_email, extra_fields } = req.body;
+    const { project_id, contract_type, client_name, client_email, client_2_name, client_2_email, extra_fields } = req.body;
+    const hasClient2 = !!(client_2_email && String(client_2_email).trim());
     const ctype = contract_type || 'client';
     const providedTitle = (req.body.title || '').trim();
     console.log('[SendDocx] body ->', JSON.stringify({
@@ -592,10 +593,12 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
         test_mode: false,
         name: title,
         files: [{ name:'contract.pdf', file_url: fileUrl }],
-        recipients: [
-          { id:'1', name: client_name || 'Client', email: client_email },
-          { id:'2', name: builderName || 'Builder', email: req.user.email },
-        ],
+        recipients: (function(){
+          const r = [ { id:'1', name: client_name || 'Client', email: client_email, send_email: false } ];
+          if(hasClient2){ r.push({ id:'3', name: client_2_name || 'Co-signer', email: client_2_email, send_email: true }); }
+          r.push({ id:'2', name: builderName || 'Builder', email: req.user.email, send_email: false });
+          return r;
+        })(),
         embedded_signing: true, reminder_enabled: true, apply_signing_order: true,
         text_tags: true,
       }),
