@@ -641,12 +641,13 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     try {
       const builderName = ((req.user.first_name||'')+' '+(req.user.last_name||'')).trim();
       const { data: comp } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      const { data: projRow } = await supabaseAdmin.from('projects').select('name, address').eq('id', project_id).maybeSingle();
       await sendContractNotification({
         to: client_email,
         clientName: client_name,
         builderName,
         companyName: comp && comp.name,
-        projectName: (project && (project.name || project.address)) || '',
+        projectName: (projRow && (projRow.name || projRow.address)) || '',
       });
     } catch(e){ console.log('[SignWell] contract notification email failed:', e.message); }
     res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
