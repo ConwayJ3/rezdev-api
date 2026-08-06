@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router({ mergeParams: true });
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireProjectAccess } = require('../middleware/auth');
+const { sendMessageNotification } = require('../lib/email');
 
 // GET /projects/:projectId/messages
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
@@ -41,6 +42,38 @@ router.post('/', requireAuth, requireProjectAccess, async (req, res) => {
 
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
+
+  // Notify the OTHER party by email (fire-and-forget; never blocks the response).
+  (async () => {
+    try {
+      const pid = req.params.projectId;
+      const senderRole = req.userRole;
+      let toEmail = null, toName = null;
+      if(senderRole === 'client'){
+        // Client sent -> notify the builder (project creator).
+        const { data: proj } = await supabaseAdmin.from('projects').select('created_by, name, address').eq('id', pid).maybeSingle();
+        if(proj && proj.created_by){
+          const { data: u } = await supabaseAdmin.from('users').select('email, first_name').eq('id', proj.created_by).maybeSingle();
+          if(u){ toEmail = u.email; toName = u.first_name; }
+        }
+        var projName = proj && (proj.name || proj.address);
+      } else {
+        // Builder/PM sent -> notify the linked client.
+        const { data: pc } = await supabaseAdmin.from('project_clients').select('email, client_name').eq('project_id', pid).maybeSingle();
+        if(pc){ toEmail = pc.email; toName = pc.client_name; }
+        const { data: proj } = await supabaseAdmin.from('projects').select('name, address').eq('id', pid).maybeSingle();
+        var projName = proj && (proj.name || proj.address);
+      }
+      if(toEmail){
+        await sendMessageNotification({
+          to: toEmail,
+          recipientName: toName,
+          senderName: `${req.user.first_name} ${req.user.last_name}`.trim(),
+          projectName: projName || '',
+        });
+      }
+    } catch(e){ console.log('[Messages] notification email failed:', e.message); }
+  })();
 });
 
 // GET /projects/:projectId/messages/unread-count

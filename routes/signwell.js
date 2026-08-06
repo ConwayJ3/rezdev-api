@@ -8,6 +8,7 @@ const SW_KEY = process.env.SIGNWELL_API_KEY;
 const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
 const { fillDocx, convertDocxToPdf, applyTagsToDocx, applySignatureAnchors } = require('../lib/docxContract');
 const { uploadFile } = require('../lib/storage');
+const { sendContractNotification } = require('../lib/email');
 
 // POST /signwell/send
 router.post('/send', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
@@ -248,6 +249,19 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
         pdf_url: fileUrl,
       }).eq('id', contractRow.id);
     }
+    // Notify Client 1 that a document is waiting (they sign embedded, so SignWell
+    // sends them nothing). Never let an email failure break the send.
+    try {
+      const builderName = ((req.user.first_name||'')+' '+(req.user.last_name||'')).trim();
+      const { data: comp } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      await sendContractNotification({
+        to: client_email,
+        clientName: client_name,
+        builderName,
+        companyName: comp && comp.name,
+        projectName: (project && (project.name || project.address)) || '',
+      });
+    } catch(e){ console.log('[SignWell] contract notification email failed:', e.message); }
     res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
   } catch(e){
     console.error('[SignWell send-contract] Error:', e.message);
@@ -621,6 +635,19 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
         signwell_document_id: swData.id, signing_url: signingUrl, recipient_email: client_email, pdf_url: fileUrl,
       }).eq('id', contractRow.id);
     }
+    // Notify Client 1 that a document is waiting (they sign embedded, so SignWell
+    // sends them nothing). Never let an email failure break the send.
+    try {
+      const builderName = ((req.user.first_name||'')+' '+(req.user.last_name||'')).trim();
+      const { data: comp } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      await sendContractNotification({
+        to: client_email,
+        clientName: client_name,
+        builderName,
+        companyName: comp && comp.name,
+        projectName: (project && (project.name || project.address)) || '',
+      });
+    } catch(e){ console.log('[SignWell] contract notification email failed:', e.message); }
     res.json({ success:true, document_id: swData.id, signing_url: signingUrl, pdf_url: fileUrl, contract_id: contractRow?.id });
   } catch(e){
     console.error('[SignWell send-docx-contract] Error:', e.message);
