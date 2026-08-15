@@ -290,11 +290,11 @@ rfpRouter.get('/', requireAuth, async (req, res) => {
 });
 
 rfpRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
-  const { project_id, title, trade, description, scope, due_date, deadline, budget_range, is_public } = req.body;
+  const { project_id, title, trade, description, scope, due_date, deadline, is_public } = req.body;
   const crypto = require('crypto');
   const public_token = crypto.randomBytes(16).toString('hex');
   const { data, error } = await supabaseAdmin.from('rfps')
-    .insert({ company_id: req.companyId, project_id, title, trade, description, scope, due_date, deadline: deadline||due_date, budget_range, is_public: is_public||false, created_by: req.userId, public_token, status: 'open' })
+    .insert({ company_id: req.companyId, project_id, title, trade, description, scope, due_date, deadline: deadline||due_date, is_public: is_public||false, created_by: req.userId, public_token, status: 'open' })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
@@ -400,7 +400,7 @@ publicRfpRouter.get('/:token', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('rfps')
-      .select('id, title, trade, description, scope, deadline, budget_range, status, project_id, company_id, rfp_bids(id)')
+      .select('id, title, trade, description, scope, deadline, status, project_id, company_id, attached_file_ids, rfp_bids(id)')
       .eq('public_token', req.params.token)
       .single();
     if(error || !data) return res.status(404).json({ error: 'RFP not found' });
@@ -420,12 +420,19 @@ publicRfpRouter.get('/:token', async (req, res) => {
     } catch(e){ /* no agreement configured */ }
 
     // 2. Project files shared with this RFP (signed URLs — bidders are unauthenticated)
+    // SECURITY: only files the builder explicitly attached to THIS rfp are exposed.
+    // An empty/absent attached_file_ids means expose nothing — never the whole project.
     let files = [];
+    const allowedFileIds = Array.isArray(data.attached_file_ids)
+      ? data.attached_file_ids.map(String)
+      : [];
     try {
+      if(!allowedFileIds.length) throw new Error('no files attached to this rfp');
       const { data: pf } = await supabaseAdmin
         .from('project_files')
         .select('id, name, storage_url, file_size, mime_type')
         .eq('project_id', data.project_id)
+        .in('id', allowedFileIds)
         .order('uploaded_at', { ascending: false });
       const { getSignedUrl } = require('../lib/storage');
       files = await Promise.all((pf||[]).map(async f => {
@@ -436,7 +443,9 @@ publicRfpRouter.get('/:token', async (req, res) => {
       files = files.filter(f => f.url);
     } catch(e){ /* no files */ }
 
-    res.json(Object.assign({}, data, { agreement, files }));
+    const payload = Object.assign({}, data, { agreement, files });
+    delete payload.attached_file_ids;
+    res.json(payload);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
