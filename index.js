@@ -101,7 +101,6 @@ app.use('/projects/:projectId/inspections',   inspRouter);
 app.use('/projects/:projectId/investments',   invRouter);
 app.use('/projects/:projectId/delays',        delayRouter);
 app.use('/projects/:projectId/closing-costs', closingRouter);
-app.use('/rfp', publicRfpRouter);
 app.use('/drive', driveRouter);
 app.use('/projects/:projectId/selections',     selRouter);
 app.use('/projects/:projectId/contracts',      ctrRouter);
@@ -114,7 +113,7 @@ app.use('/contractors', contractorRoutes);
 app.use('/contract-templates', contractTemplateRoutes);
 app.use('/users',       userRoutes);
 app.use('/companies',   userRoutes);
-app.use('/rfps',        rfpRouter);
+app.use('/projects/:projectId/rfps', rfpRouter);
 
 // ── 404 ───────────────────────────────────────────────────────────
 app.use((req, res) => {

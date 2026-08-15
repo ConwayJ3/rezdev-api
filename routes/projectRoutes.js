@@ -281,23 +281,69 @@ qcRouter.put('/:id/revision', requireAuth, requireRole('owner','builder','pm'), 
 });
 
 // RFPs — /rfps
-const rfpRouter = express.Router();
+const rfpRouter = express.Router({ mergeParams: true });
 
 rfpRouter.get('/', requireAuth, async (req, res) => {
-  const { data, error } = await req.db.from('rfps').select(`*, rfp_bids(*)`).eq('company_id', req.companyId).order('created_at', { ascending: false });
+  const { data, error } = await req.db.from('rfps').select(`*, rfp_bids(*)`).eq('company_id', req.companyId).eq('project_id', req.params.projectId).order('created_at', { ascending: false });
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
 
 rfpRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
-  const { project_id, title, trade, description, scope, due_date, deadline, is_public } = req.body;
+  const { title, trade, trades, description, scope, due_date, deadline, start_date, duration, notes, external_emails, sent_to, attached_file_ids, is_public } = req.body;
   const crypto = require('crypto');
   const public_token = crypto.randomBytes(16).toString('hex');
   const { data, error } = await supabaseAdmin.from('rfps')
-    .insert({ company_id: req.companyId, project_id, title, trade, description, scope, due_date, deadline: deadline||due_date, is_public: is_public||false, created_by: req.userId, public_token, status: 'open' })
+    .insert({
+      company_id: req.companyId,
+      project_id: req.params.projectId,
+      title, trade, description, scope, due_date,
+      trades:            Array.isArray(trades) ? trades : [],
+      deadline:          deadline || due_date,
+      start_date:        start_date || null,
+      duration:          duration || null,
+      notes:             notes || null,
+      external_emails:   Array.isArray(external_emails) ? external_emails : [],
+      sent_to:           Array.isArray(sent_to) ? sent_to : [],
+      attached_file_ids: Array.isArray(attached_file_ids) ? attached_file_ids : [],
+      is_public:         is_public || false,
+      created_by:        req.userId,
+      public_token,
+      status: 'open',
+    })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
+});
+
+rfpRouter.put('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  const allowed = ['title','trade','trades','description','scope','due_date','deadline',
+                   'start_date','duration','notes','external_emails','sent_to',
+                   'attached_file_ids','status'];
+  const patch = {};
+  for(const k of allowed) if(k in req.body) patch[k] = req.body[k];
+  if(!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to update' });
+  const { data, error } = await supabaseAdmin.from('rfps')
+    .update(patch)
+    .eq('id', req.params.id)
+    .eq('company_id', req.companyId)
+    .select().single();
+  if(error) return res.status(400).json({ error: error.message });
+  if(!data)  return res.status(404).json({ error: 'RFP not found' });
+  res.json(data);
+});
+
+rfpRouter.delete('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  // Never destroy an RFP that contractors have already bid on — cancel it instead.
+  const { data: bids } = await supabaseAdmin.from('rfp_bids')
+    .select('id').eq('rfp_id', req.params.id).limit(1);
+  if(bids && bids.length){
+    return res.status(409).json({ error: 'This RFP has bids. Cancel it instead of deleting.' });
+  }
+  const { error } = await supabaseAdmin.from('rfps')
+    .delete().eq('id', req.params.id).eq('company_id', req.companyId);
+  if(error) return res.status(400).json({ error: error.message });
+  res.json({ ok: true });
 });
 
 rfpRouter.post('/:id/bids', async (req, res) => {
@@ -400,7 +446,7 @@ publicRfpRouter.get('/:token', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('rfps')
-      .select('id, title, trade, description, scope, deadline, status, project_id, company_id, attached_file_ids, rfp_bids(id)')
+      .select('id, title, trade, trades, description, scope, deadline, start_date, duration, notes, status, project_id, company_id, attached_file_ids, rfp_bids(id)')
       .eq('public_token', req.params.token)
       .single();
     if(error || !data) return res.status(404).json({ error: 'RFP not found' });
@@ -458,7 +504,7 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
     const { contractor_name, company_name, email, phone, trade, amount, timeline_days, notes } = req.body;
     if(!contractor_name || !email) return res.status(400).json({ error: 'name and email required' });
     const { data, error } = await supabaseAdmin.from('rfp_bids')
-      .insert({ rfp_id: rfp.id, contractor_name, company_name, email, phone, trade, amount, timeline_days, notes, submitted_at: new Date().toISOString() })
+      .insert({ rfp_id: rfp.id, contractor_name, company_name, email, phone, trade, amount, timeline_days, notes, status: 'submitted', submitted_at: new Date().toISOString() })
       .select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.status(201).json(data);
