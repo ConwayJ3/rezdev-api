@@ -117,6 +117,77 @@ ctrRouter.post('/', requireAuth, requireRole('owner','builder'), requireProjectA
   res.status(201).json(data);
 });
 
+// Upload a redlined/revised DOCX for an existing contract.
+// Creates a NEW contract row superseding the original; the original is untouched.
+ctrRouter.post('/:id/revised-docx', requireAuth, requireRole('owner','builder'),
+               requireProjectAccess, upload.single('file'), async (req, res) => {
+  try {
+    if(!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const name = (req.file.originalname || '').toLowerCase();
+    if(!name.endsWith('.docx')){
+      return res.status(400).json({ error: 'Revised contract must be a .docx file' });
+    }
+
+    // Original must exist AND belong to this project.
+    const { data: orig, error: origErr } = await supabaseAdmin.from('contracts')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('project_id', req.params.projectId)
+      .single();
+    if(origErr || !orig) return res.status(404).json({ error: 'Contract not found' });
+
+    // Private bucket — a redlined contract carries negotiated terms.
+    const safe = (req.file.originalname || 'revised.docx').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = req.params.projectId + '/contracts/' + Date.now() + '_' + safe;
+    let storedPath;
+    try {
+      storedPath = await uploadFile('files', storagePath, req.file.buffer, req.file.mimetype);
+    } catch(e){
+      console.error('[Contracts] revised docx upload failed:', e && (e.message || e));
+      return res.status(500).json({ error: 'Upload failed' });
+    }
+
+    const now = new Date().toISOString();
+    const { data, error } = await supabaseAdmin.from('contracts')
+      .insert({
+        project_id:             req.params.projectId,
+        title:                  orig.title,
+        body:                   orig.body,
+        contractor_id:          orig.contractor_id,
+        contracted_amount:      orig.contracted_amount,
+        start_date:             orig.start_date,
+        contract_type:          orig.contract_type,
+        recipient_email:        orig.recipient_email,
+        status:                 'draft',
+        source:                 'uploaded_revision',
+        revised_docx_url:       storedPath,
+        supersedes_contract_id: orig.id,
+        tag_rules:              [],
+        created_by:             req.userId,
+        activity_log: [{ action: 'revision uploaded', at: now, file: req.file.originalname }],
+      })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Signed URL for a revised contract's DOCX (private bucket).
+ctrRouter.get('/:id/revised-docx-url', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: c } = await supabaseAdmin.from('contracts')
+      .select('revised_docx_url')
+      .eq('id', req.params.id)
+      .eq('project_id', req.params.projectId)
+      .single();
+    if(!c || !c.revised_docx_url) return res.status(404).json({ error: 'No revised document' });
+    const url = await getSignedUrl('files', c.revised_docx_url);
+    res.json({ url });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 ctrRouter.put('/:id/send', requireAuth, requireRole('owner','builder'), async (req, res) => {
   const { data, error } = await supabaseAdmin.from('contracts')
     .update({ status: 'sent', sent_at: new Date().toISOString(), activity_log: supabaseAdmin.sql`activity_log || '[{"action":"sent","at":"${new Date().toISOString()}"}]'::jsonb` })
