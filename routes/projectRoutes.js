@@ -246,31 +246,6 @@ ctrRouter.put('/:id/archive', requireAuth, requireRole('owner','builder'),
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-ctrRouter.put('/:id/send', requireAuth, requireRole('owner','builder'), async (req, res) => {
-  const { data, error } = await supabaseAdmin.from('contracts')
-    .update({ status: 'sent', sent_at: new Date().toISOString(), activity_log: supabaseAdmin.sql`activity_log || '[{"action":"sent","at":"${new Date().toISOString()}"}]'::jsonb` })
-    .eq('id', req.params.id).select().single();
-  if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
-});
-
-ctrRouter.put('/:id/sign', requireAuth, async (req, res) => {
-  const { data, error } = await supabaseAdmin.from('contracts')
-    .update({ status: 'signed', signed_at: new Date().toISOString() })
-    .eq('id', req.params.id).select().single();
-  if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
-});
-
-ctrRouter.put('/:id/decline', requireAuth, async (req, res) => {
-  const { reason } = req.body;
-  const { data, error } = await supabaseAdmin.from('contracts')
-    .update({ status: 'declined', declined_at: new Date().toISOString(), decline_reason: reason || '' })
-    .eq('id', req.params.id).select().single();
-  if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
-});
-
 // ═══════════════════════════════════════════════════════════════════
 // CONTRACTOR PAYMENTS — /projects/:projectId/payments
 // ═══════════════════════════════════════════════════════════════════
