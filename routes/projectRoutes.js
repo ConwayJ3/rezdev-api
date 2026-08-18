@@ -229,6 +229,23 @@ ctrRouter.delete('/:id', requireAuth, requireRole('owner','builder'),
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// Archive / unarchive. Non-destructive, so allowed at any status — unlike
+// delete, which is limited to unsent revision drafts.
+ctrRouter.put('/:id/archive', requireAuth, requireRole('owner','builder'),
+              requireProjectAccess, async (req, res) => {
+  try {
+    const archived = req.body.archived !== false;
+    const { data, error } = await supabaseAdmin.from('contracts')
+      .update({ archived_at: archived ? new Date().toISOString() : null })
+      .eq('id', req.params.id)
+      .eq('project_id', req.params.projectId)
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    if(!data)  return res.status(404).json({ error: 'Contract not found' });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 ctrRouter.put('/:id/send', requireAuth, requireRole('owner','builder'), async (req, res) => {
   const { data, error } = await supabaseAdmin.from('contracts')
     .update({ status: 'sent', sent_at: new Date().toISOString(), activity_log: supabaseAdmin.sql`activity_log || '[{"action":"sent","at":"${new Date().toISOString()}"}]'::jsonb` })
