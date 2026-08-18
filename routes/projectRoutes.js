@@ -188,6 +188,47 @@ ctrRouter.get('/:id/revised-docx-url', requireAuth, requireProjectAccess, async 
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// Delete an UNSENT revision draft. Intentionally narrow: sent contracts and
+// template contracts are never deletable here — removing either would break
+// the audit chain this feature exists to preserve.
+ctrRouter.delete('/:id', requireAuth, requireRole('owner','builder'),
+                 requireProjectAccess, async (req, res) => {
+  try {
+    const { data: c } = await supabaseAdmin.from('contracts')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('project_id', req.params.projectId)
+      .maybeSingle();
+    if(!c) return res.status(404).json({ error: 'Contract not found' });
+
+    if(c.source !== 'uploaded_revision'){
+      return res.status(409).json({ error: 'Only uploaded revisions can be deleted here' });
+    }
+    if(c.status !== 'draft' || c.signwell_document_id){
+      return res.status(409).json({ error: 'This revision has already been sent and cannot be deleted' });
+    }
+
+    const { data: children } = await supabaseAdmin.from('contracts')
+      .select('id').eq('supersedes_contract_id', c.id).limit(1);
+    if(children && children.length){
+      return res.status(409).json({ error: 'Another revision supersedes this one' });
+    }
+
+    // Best effort — a stranded file is better than a failed delete.
+    if(c.revised_docx_url){
+      try {
+        const { deleteFile } = require('../lib/storage');
+        await deleteFile('files', c.revised_docx_url);
+      } catch(e){ console.log('[Contracts] revision file cleanup failed:', e.message); }
+    }
+
+    const { error } = await supabaseAdmin.from('contracts').delete().eq('id', c.id);
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 ctrRouter.put('/:id/send', requireAuth, requireRole('owner','builder'), async (req, res) => {
   const { data, error } = await supabaseAdmin.from('contracts')
     .update({ status: 'sent', sent_at: new Date().toISOString(), activity_log: supabaseAdmin.sql`activity_log || '[{"action":"sent","at":"${new Date().toISOString()}"}]'::jsonb` })
