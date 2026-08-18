@@ -657,6 +657,80 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
   }
 });
 
+// ── Revised (redlined) contracts ───────────────────────────────────
+// A revision is a per-deal DOCX uploaded by the builder. Merge fields are
+// already baked in from the offline redlining, so only SIGNATURE anchors
+// get placed. Text extraction must match the template route exactly or the
+// saved occurrence offsets won't line up at render time.
+
+// Fetch a contract's revised DOCX as a Buffer (private bucket -> signed URL).
+async function fetchRevisedDocxBuffer(contract){
+  if(!contract || !contract.revised_docx_url) throw new Error('Contract has no revised document');
+  const { getSignedUrl } = require('../lib/storage');
+  const url = await getSignedUrl('files', contract.revised_docx_url);
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('Could not download revised DOCX');
+  return Buffer.from(await r.arrayBuffer());
+}
+
+// Load a contract and verify it belongs to the caller's company (contracts
+// have no company_id — ownership runs through the project).
+async function loadOwnedContract(contractId, companyId){
+  const { data: c } = await supabaseAdmin
+    .from('contracts').select('*').eq('id', contractId).maybeSingle();
+  if(!c) return null;
+  const { data: proj } = await supabaseAdmin
+    .from('projects').select('id, company_id').eq('id', c.project_id).maybeSingle();
+  if(!proj || proj.company_id !== companyId) return null;
+  return c;
+}
+
+// GET /signwell/contracts/:id/text — extract the revised DOCX's readable text
+router.get('/contracts/:id/text', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const c = await loadOwnedContract(req.params.id, req.companyId);
+    if(!c) return res.status(404).json({ error: 'Contract not found' });
+    if(!c.revised_docx_url) return res.status(400).json({ error: 'This contract has no uploaded document' });
+
+    const docxBuffer = await fetchRevisedDocxBuffer(c);
+    const mammoth = require('mammoth');
+    const textResult = await mammoth.extractRawText({ buffer: docxBuffer });
+
+    res.json({
+      success: true,
+      contract_id: c.id,
+      text: textResult.value || '',
+      tag_rules: Array.isArray(c.tag_rules) ? c.tag_rules : [],
+      fill_fields: [],
+    });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// POST /signwell/contracts/:id/apply-tags — save rules onto the contract row.
+// The full rules array REPLACES the stored one.
+router.post('/contracts/:id/apply-tags', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const rules = Array.isArray(req.body.rules) ? req.body.rules : [];
+    const c = await loadOwnedContract(req.params.id, req.companyId);
+    if(!c) return res.status(404).json({ error: 'Contract not found' });
+
+    const { error } = await supabaseAdmin.from('contracts')
+      .update({ tag_rules: rules }).eq('id', c.id);
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.json({ success: true, saved_rules: rules.length });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Render a revision's DOCX from its uploaded original + saved tag_rules.
+// Mirrors renderTaggedDocx(tmpl) — original never mutated, tags are data.
+async function renderRevisedDocx(contract){
+  const originalBuffer = await fetchRevisedDocxBuffer(contract);
+  const rules = Array.isArray(contract.tag_rules) ? contract.tag_rules : [];
+  if(!rules.length) return originalBuffer;
+  return applyTagsToDocx(originalBuffer, rules);
+}
+
 // GET /signwell/templates/:type/text — extract the DOCX's readable text for in-app tagging
 router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'), async (req, res) => {
   try {
