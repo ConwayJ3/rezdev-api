@@ -654,7 +654,6 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
         rfp_id:              rfp.id,
         contractor_id:       contractorId,
         contractor_name, company_name, email, phone,
-        trade:               tradeList.join(', ') || null,
         trades:              tradeList,
         company_info:        company_info || null,
         reference_contacts:  refs,
