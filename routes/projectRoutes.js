@@ -601,14 +601,72 @@ publicRfpRouter.get('/:token', async (req, res) => {
 
 publicRfpRouter.post('/:token/bid', async (req, res) => {
   try {
-    const { data: rfp } = await supabaseAdmin.from('rfps').select('id, status, deadline').eq('public_token', req.params.token).single();
+    const { data: rfp } = await supabaseAdmin.from('rfps')
+      .select('id, status, deadline, company_id')
+      .eq('public_token', req.params.token).single();
     if(!rfp) return res.status(404).json({ error: 'RFP not found' });
     if(rfp.status !== 'open') return res.status(400).json({ error: 'RFP is no longer accepting bids' });
     if(rfp.deadline && new Date(rfp.deadline) < new Date()) return res.status(400).json({ error: 'Bid deadline has passed' });
-    const { contractor_name, company_name, email, phone, trade, amount, timeline_days, notes } = req.body;
+
+    const {
+      contractor_name, company_name, email, phone,
+      trade, trades, company_info, reference_contacts,
+      insurance_confirmed, agreement_accepted,
+      amount, timeframe, timeline_days, notes,
+    } = req.body;
     if(!contractor_name || !email) return res.status(400).json({ error: 'name and email required' });
+
+    const tradeList = Array.isArray(trades) ? trades : (trade ? [trade] : []);
+    const refs = Array.isArray(reference_contacts)
+      ? reference_contacts.filter(function(r){ return r && String(r).trim(); })
+      : [];
+
+    // Bidders become real contractor records so they land in the directory and
+    // can be invited to future RFPs. Deduped on email within the company;
+    // status 'prospect' keeps them distinct from contractors the builder vetted.
+    let contractorId = null;
+    try {
+      const emailNorm = String(email).trim().toLowerCase();
+      const { data: existing } = await supabaseAdmin.from('contractors')
+        .select('id').eq('company_id', rfp.company_id).ilike('email', emailNorm).limit(1);
+      if(existing && existing.length){
+        contractorId = existing[0].id;
+      } else {
+        const { data: created, error: cErr } = await supabaseAdmin.from('contractors')
+          .insert({
+            company_id:   rfp.company_id,
+            company_name: company_name || contractor_name,
+            contact_name: contractor_name,
+            trade:        tradeList.length ? tradeList[0] : null,
+            email:        emailNorm,
+            phone:        phone || null,
+            status:       'prospect',
+            notes:        'Added automatically from an RFP bid submission.',
+          })
+          .select('id').single();
+        if(cErr) console.log('[RFP] contractor create failed:', cErr.message);
+        if(created) contractorId = created.id;
+      }
+    } catch(e){ console.log('[RFP] contractor lookup failed:', e.message); }
+
     const { data, error } = await supabaseAdmin.from('rfp_bids')
-      .insert({ rfp_id: rfp.id, contractor_name, company_name, email, phone, trade, amount, timeline_days, notes, status: 'submitted', submitted_at: new Date().toISOString() })
+      .insert({
+        rfp_id:              rfp.id,
+        contractor_id:       contractorId,
+        contractor_name, company_name, email, phone,
+        trade:               tradeList.join(', ') || null,
+        trades:              tradeList,
+        company_info:        company_info || null,
+        reference_contacts:  refs,
+        insurance_confirmed: !!insurance_confirmed,
+        agreement_accepted:  !!agreement_accepted,
+        amount,
+        timeframe:           timeframe || null,
+        timeline_days:       (timeline_days != null && timeline_days !== '') ? timeline_days : null,
+        notes:               notes || null,
+        status:              'submitted',
+        submitted_at:        new Date().toISOString(),
+      })
       .select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.status(201).json(data);
