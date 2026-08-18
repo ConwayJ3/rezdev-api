@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const SIGNWELL_API = 'https://www.signwell.com/api/v1';
 const SW_KEY = process.env.SIGNWELL_API_KEY;
 const { mergeTemplate, buildMergeData, generateContractPdf } = require('../lib/contractPdf');
-const { fillDocx, convertDocxToPdf, applyTagsToDocx, applySignatureAnchors } = require('../lib/docxContract');
+const { fillDocx, convertDocxToPdf, applyTagsToDocx, applySignatureAnchors, extractFooterText } = require('../lib/docxContract');
 const { uploadFile } = require('../lib/storage');
 const { sendContractNotification } = require('../lib/email');
 
@@ -695,11 +695,16 @@ router.get('/contracts/:id/text', requireAuth, requireRole('owner','builder'), a
     const docxBuffer = await fetchRevisedDocxBuffer(c);
     const mammoth = require('mammoth');
     const textResult = await mammoth.extractRawText({ buffer: docxBuffer });
+    // mammoth reads the BODY only — footers come from the zip directly.
+    let footer = { text: '', parts: 0 };
+    try { footer = extractFooterText(docxBuffer); } catch(e){ /* no footer */ }
 
     res.json({
       success: true,
       contract_id: c.id,
       text: textResult.value || '',
+      footer_text: footer.text,
+      footer_parts: footer.parts,
       tag_rules: Array.isArray(c.tag_rules) ? c.tag_rules : [],
       fill_fields: [],
     });
@@ -860,11 +865,16 @@ router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'),
 
     const mammoth = require('mammoth');
     const textResult = await mammoth.extractRawText({ buffer: docxBuffer });
+    // mammoth reads the BODY only — footers come from the zip directly.
+    let footer = { text: '', parts: 0 };
+    try { footer = extractFooterText(docxBuffer); } catch(e){ /* no footer */ }
 
     res.json({
       success: true,
       contract_type: ctype,
       text: textResult.value || '',
+      footer_text: footer.text,
+      footer_parts: footer.parts,
       tag_rules: Array.isArray(tmpl.tag_rules) ? tmpl.tag_rules : [],
       fill_fields: Array.isArray(tmpl.fill_fields) ? tmpl.fill_fields : [],
     });
