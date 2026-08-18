@@ -731,6 +731,118 @@ async function renderRevisedDocx(contract){
   return applyTagsToDocx(originalBuffer, rules);
 }
 
+// POST /signwell/send-revised-contract — send an uploaded, tagged revision.
+// Body: { contract_id, client_name, client_email, client_2_name, client_2_email, title }
+router.post('/send-revised-contract', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const { contract_id, client_name, client_email, client_2_name, client_2_email, title: providedTitle } = req.body;
+    if(!contract_id) return res.status(400).json({ error: 'contract_id required' });
+    if(!client_email) return res.status(400).json({ error: 'Recipient email required' });
+
+    const contract = await loadOwnedContract(contract_id, req.companyId);
+    if(!contract) return res.status(404).json({ error: 'Contract not found' });
+    if(contract.source !== 'uploaded_revision'){
+      return res.status(400).json({ error: 'This contract is not an uploaded revision' });
+    }
+    if(!contract.revised_docx_url){
+      return res.status(400).json({ error: 'This revision has no uploaded document' });
+    }
+    const rules = Array.isArray(contract.tag_rules) ? contract.tag_rules : [];
+    if(!rules.length){
+      return res.status(400).json({ error: 'Place signature fields on the document before sending' });
+    }
+    if(contract.status === 'sent' || contract.status === 'signed'){
+      return res.status(409).json({ error: 'This revision has already been sent' });
+    }
+
+    const hasClient2 = !!(client_2_email && String(client_2_email).trim());
+
+    // 1. Render the DOCX from the uploaded original + its saved tag rules.
+    //    NOTE: no fillDocx — merge values are already baked into the redline.
+    let taggedBuffer;
+    try { taggedBuffer = await renderRevisedDocx(contract); }
+    catch(e){ return res.status(400).json({ error: 'Could not render revision: ' + e.message }); }
+
+    // 2. Signature markers -> SignWell text tags (position-based, same as templates)
+    let finalDocx;
+    try { finalDocx = applySignatureAnchors(taggedBuffer, hasClient2); }
+    catch(e){ return res.status(400).json({ error: 'Signature placement failed: ' + e.message }); }
+
+    // 3. PDF
+    let pdfBuffer;
+    try { pdfBuffer = await convertDocxToPdf(finalDocx, 'revised-contract.docx'); }
+    catch(e){ return res.status(400).json({ error: 'PDF conversion failed: ' + e.message }); }
+
+    // 4. Private bucket + signed URL (SignWell fetches it immediately).
+    const { uploadFile, getSignedUrl } = require('../lib/storage');
+    const pdfPath = contract.project_id + '/contracts/revision_' + contract.id + '_' + Date.now() + '.pdf';
+    await uploadFile('files', pdfPath, pdfBuffer, 'application/pdf');
+    const fileUrl = await getSignedUrl('files', pdfPath, 3600);
+
+    const title = providedTitle || contract.title || 'Revised Contract';
+    const builderName = ((req.user.first_name||'')+' '+(req.user.last_name||'')).trim();
+
+    // 5. SignWell — recipient ORDER drives {{signature:N}}: Client 1, [Client 2], Builder.
+    const swRes = await fetch(SIGNWELL_API+'/documents', {
+      method:'POST',
+      headers:{ 'X-Api-Key': SW_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        test_mode: false,
+        name: title,
+        files: [{ name:'contract.pdf', file_url: fileUrl }],
+        recipients: (function(){
+          const r = [ { id:'1', name: client_name || 'Client', email: client_email, send_email: false } ];
+          if(hasClient2){ r.push({ id:'3', name: client_2_name || 'Co-signer', email: client_2_email, send_email: true }); }
+          r.push({ id:'2', name: builderName || 'Builder', email: req.user.email, send_email: false });
+          return r;
+        })(),
+        embedded_signing: true, reminder_enabled: true, apply_signing_order: true,
+        text_tags: true,
+      }),
+    });
+    const swData = await swRes.json();
+    if(!swRes.ok) return res.status(400).json({ error: swData.error || 'SignWell error', details: swData });
+
+    let signingUrl = null;
+    if(Array.isArray(swData.recipients)){
+      const r = swData.recipients.find(x=>x.id==='1') || swData.recipients[0];
+      signingUrl = r ? (r.embedded_signing_url || r.signing_url) : null;
+    }
+
+    const now = new Date().toISOString();
+    const log = Array.isArray(contract.activity_log) ? contract.activity_log.slice() : [];
+    log.push({ action: 'revision sent', at: now });
+
+    await supabaseAdmin.from('contracts').update({
+      status: 'sent', sent_at: now,
+      signwell_document_id: swData.id,
+      signing_url: signingUrl,
+      recipient_email: client_email,
+      pdf_url: fileUrl,
+      title: title,
+      activity_log: log,
+    }).eq('id', contract.id);
+
+    // Client 1 signs embedded, so SignWell emails them nothing — we do.
+    try {
+      const { data: comp } = await supabaseAdmin.from('companies').select('name').eq('id', req.companyId).maybeSingle();
+      const { data: projRow } = await supabaseAdmin.from('projects').select('name, address').eq('id', contract.project_id).maybeSingle();
+      await sendContractNotification({
+        to: client_email,
+        clientName: client_name,
+        builderName,
+        companyName: comp && comp.name,
+        projectName: (projRow && (projRow.name || projRow.address)) || '',
+      });
+    } catch(e){ console.log('[SignWell] revision notification email failed:', e.message); }
+
+    res.json({ success:true, document_id: swData.id, signing_url: signingUrl, contract_id: contract.id });
+  } catch(e){
+    console.error('[SignWell send-revised-contract] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /signwell/templates/:type/text — extract the DOCX's readable text for in-app tagging
 router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'), async (req, res) => {
   try {
