@@ -611,15 +611,23 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
     const {
       contractor_name, company_name, email, phone,
       trade, trades, company_info, reference_contacts,
+      year_established, employees, license_number, certifications,
       insurance_confirmed, agreement_accepted,
       amount, timeframe, timeline_days, notes,
     } = req.body;
     if(!contractor_name || !email) return res.status(400).json({ error: 'name and email required' });
 
     const tradeList = Array.isArray(trades) ? trades : (trade ? [trade] : []);
-    const refs = Array.isArray(reference_contacts)
-      ? reference_contacts.filter(function(r){ return r && String(r).trim(); })
-      : [];
+    // References arrive as {name, phone} objects. Older submissions sent
+    // plain strings; normalise both so the builder view has one shape.
+    const refs = (Array.isArray(reference_contacts) ? reference_contacts : [])
+      .map(function(r){
+        if(!r) return null;
+        if(typeof r === 'string') return r.trim() ? { name: r.trim(), phone: '' } : null;
+        const name = (r.name || '').trim(), phone = (r.phone || '').trim();
+        return (name || phone) ? { name: name, phone: phone } : null;
+      })
+      .filter(Boolean);
 
     // Bidders become real contractor records so they land in the directory and
     // can be invited to future RFPs. Deduped on email within the company;
@@ -638,9 +646,10 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
             company_name: company_name || contractor_name,
             contact_name: contractor_name,
             trade:        tradeList.length ? tradeList[0] : null,
-            email:        emailNorm,
-            phone:        phone || null,
-            status:       'prospect',
+            email:          emailNorm,
+            phone:          phone || null,
+            license_number: license_number || null,
+            status:         'prospect',
             notes:        'Added automatically from an RFP bid submission.',
           })
           .select('id').single();
@@ -656,6 +665,10 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
         contractor_name, company_name, email, phone,
         trades:              tradeList,
         company_info:        company_info || null,
+        year_established:    year_established || null,
+        employees:           employees || null,
+        license_number:      license_number || null,
+        certifications:      certifications || null,
         reference_contacts:  refs,
         insurance_confirmed: !!insurance_confirmed,
         agreement_accepted:  !!agreement_accepted,
