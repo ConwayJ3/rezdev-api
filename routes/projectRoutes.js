@@ -40,6 +40,7 @@ coRouter.put('/:id', requireAuth, requireProjectAccess, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 // SELECTIONS — /projects/:projectId/selections
 // ═══════════════════════════════════════════════════════════════════
+const { sendRfpInvite, sendBidReceived, sendBidDeclined, sendBidAwarded } = require('../lib/email');
 const multer  = require('multer');
 const { uploadFile, getSignedUrl } = require('../lib/storage');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -417,7 +418,161 @@ rfpRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res
     })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
-  res.status(201).json(data);
+
+  // Invite the external contractors. Fire-and-forget: a mail failure must
+  // never lose the RFP that was just created.
+  let invitedCount = 0;
+  try {
+    const emails = Array.isArray(external_emails) ? external_emails : [];
+    if(emails.length && data && data.public_token){
+      const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
+      const bidUrl = appUrl + '/rfp-landing.html?token=' + data.public_token;
+      const { data: me } = await supabaseAdmin.from('users')
+        .select('first_name,last_name').eq('id', req.userId).maybeSingle();
+      const { data: co } = await supabaseAdmin.from('companies')
+        .select('name').eq('id', req.companyId).maybeSingle();
+      const { data: proj } = await supabaseAdmin.from('projects')
+        .select('name,address').eq('id', req.params.projectId).maybeSingle();
+      for(const addr of emails){
+        try {
+          await sendRfpInvite({
+            to: addr,
+            companyName: co && co.name,
+            builderName: me ? [me.first_name, me.last_name].filter(Boolean).join(' ') : '',
+            projectName: proj ? (proj.name || proj.address) : '',
+            rfpTitle: data.title,
+            deadline: data.deadline,
+            bidUrl,
+          });
+          invitedCount++;
+        } catch(e){ console.log('[RFP] invite failed for', addr, e.message); }
+      }
+    }
+  } catch(e){ console.log('[RFP] invite step failed:', e.message); }
+
+  res.status(201).json(Object.assign({}, data, { invited_count: invitedCount }));
+});
+
+// Award: one transaction. Records every bid's outcome, flips the RFP, creates
+// the winner's portal account, and emails everyone involved.
+rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const { bid_id } = req.body;
+    if(!bid_id) return res.status(400).json({ error: 'bid_id required' });
+
+    const { data: rfp } = await supabaseAdmin.from('rfps')
+      .select('id, title, company_id, project_id')
+      .eq('id', req.params.id).eq('company_id', req.companyId).maybeSingle();
+    if(!rfp) return res.status(404).json({ error: 'RFP not found' });
+
+    const { data: bids } = await supabaseAdmin.from('rfp_bids').select('*').eq('rfp_id', rfp.id);
+    const all = bids || [];
+    const winner = all.find(function(b){ return b.id === bid_id; });
+    if(!winner) return res.status(404).json({ error: 'Bid not found on this RFP' });
+
+    // 1. Outcomes first — the award stands even if a later step fails.
+    for(const b of all){
+      await supabaseAdmin.from('rfp_bids')
+        .update({ status: b.id === bid_id ? 'awarded' : 'declined',
+                  reviewed_at: new Date().toISOString() })
+        .eq('id', b.id);
+    }
+    await supabaseAdmin.from('rfps').update({ status: 'awarded' }).eq('id', rfp.id);
+
+    // 2. Context for the emails
+    let builderName = '', companyName = '', projectName = '';
+    try {
+      const { data: me } = await supabaseAdmin.from('users')
+        .select('first_name,last_name').eq('id', req.userId).maybeSingle();
+      if(me) builderName = [me.first_name, me.last_name].filter(Boolean).join(' ');
+      const { data: co } = await supabaseAdmin.from('companies')
+        .select('name').eq('id', req.companyId).maybeSingle();
+      if(co) companyName = co.name;
+      const { data: proj } = await supabaseAdmin.from('projects')
+        .select('name,address').eq('id', rfp.project_id).maybeSingle();
+      if(proj) projectName = proj.name || proj.address || '';
+    } catch(e){ /* non-fatal */ }
+
+    // 3. Portal account for the winner. Only now — bidding needs no account.
+    let setupUrl = null;
+    try {
+      if(winner.email){
+        const emailNorm = String(winner.email).trim().toLowerCase();
+        const { data: contractor } = await supabaseAdmin.from('contractors')
+          .select('id, user_id').eq('company_id', rfp.company_id)
+          .ilike('email', emailNorm).maybeSingle();
+
+        if(contractor && !contractor.user_id){
+          const first = (winner.contractor_name || 'Contractor').split(' ')[0];
+          const last  = (winner.contractor_name || '').split(' ').slice(1).join(' ');
+          const tempPassword = 'RezDev' + Math.random().toString(36).slice(2,12) + '!A';
+          const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+            email: winner.email,
+            password: tempPassword,
+            email_confirm: true,
+            user_metadata: { first_name: first, last_name: last, role: 'contractor' },
+          });
+
+          let userId = authUser && authUser.user && authUser.user.id;
+          if(authErr){
+            if(/already|registered|exists/i.test(authErr.message)){
+              const { data: existing } = await supabaseAdmin.from('users')
+                .select('id').ilike('email', emailNorm).maybeSingle();
+              userId = existing && existing.id;
+            } else {
+              console.log('[RFP] contractor account creation failed:', authErr.message);
+            }
+          }
+
+          if(userId){
+            try {
+              await supabaseAdmin.from('users').insert({
+                id: userId, company_id: rfp.company_id,
+                first_name: first, last_name: last,
+                email: winner.email, role: 'contractor', status: 'pending',
+              });
+            } catch(e){ /* profile may already exist */ }
+
+            await supabaseAdmin.from('contractors')
+              .update({ user_id: userId, status: 'active' }).eq('id', contractor.id);
+
+            const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
+            const { data: linkData } = await supabaseAdmin.auth.admin.generateLink({
+              type: 'recovery', email: winner.email,
+              options: { redirectTo: appUrl + '/set-password.html' },
+            });
+            setupUrl = (linkData && linkData.properties && linkData.properties.action_link)
+                       || (appUrl + '/set-password.html');
+          }
+        } else if(contractor && contractor.user_id){
+          await supabaseAdmin.from('contractors')
+            .update({ status: 'active' }).eq('id', contractor.id);
+        }
+      }
+    } catch(e){ console.log('[RFP] winner account step failed:', e.message); }
+
+    // 4. Emails — never let a failure undo the award
+    try {
+      await sendBidAwarded({
+        to: winner.email, contractorName: winner.contractor_name,
+        companyName, rfpTitle: rfp.title, projectName,
+        amount: winner.amount, setupUrl,
+      });
+    } catch(e){ console.log('[RFP] award email failed:', e.message); }
+
+    for(const b of all){
+      if(b.id === bid_id || !b.email) continue;
+      try {
+        await sendBidDeclined({
+          to: b.email, contractorName: b.contractor_name,
+          companyName, rfpTitle: rfp.title, projectName,
+        });
+      } catch(e){ console.log('[RFP] decline email failed:', e.message); }
+    }
+
+    res.json({ success: true, awarded_to: winner.contractor_name,
+               declined_count: Math.max(0, all.length - 1), portal_invited: !!setupUrl });
+  } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
 rfpRouter.put('/:id', requireAuth, requireRole('owner','builder'), async (req, res) => {
@@ -823,6 +978,30 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
       })
       .select().single();
     if(error) return res.status(400).json({ error: error.message });
+
+    // Tell the builder. Fire-and-forget — a mail failure must not lose the bid.
+    try {
+      const { data: full } = await supabaseAdmin.from('rfps')
+        .select('title, created_by, project_id').eq('id', rfp.id).maybeSingle();
+      if(full && full.created_by){
+        const { data: builder } = await supabaseAdmin.from('users')
+          .select('email, first_name').eq('id', full.created_by).maybeSingle();
+        const { data: proj } = await supabaseAdmin.from('projects')
+          .select('name,address').eq('id', full.project_id).maybeSingle();
+        if(builder && builder.email){
+          await sendBidReceived({
+            to: builder.email,
+            builderName: builder.first_name,
+            rfpTitle: full.title,
+            contractorName: contractor_name,
+            companyName: company_name,
+            amount: amount,
+            projectName: proj ? (proj.name || proj.address) : '',
+          });
+        }
+      }
+    } catch(e){ console.log('[RFP] bid notification failed:', e.message); }
+
     res.status(201).json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
