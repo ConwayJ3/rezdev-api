@@ -450,6 +450,65 @@ rfpRouter.delete('/:id', requireAuth, requireRole('owner','builder'), async (req
   res.json({ ok: true });
 });
 
+// Attach a file to THIS RFP. Deliberately NOT added to the project file
+// library — RFP attachments are scoped to the solicitation.
+rfpRouter.post('/:id/files', requireAuth, requireRole('owner','builder'),
+               upload.single('file'), async (req, res) => {
+  try {
+    if(!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const { data: rfp } = await supabaseAdmin.from('rfps')
+      .select('id, rfp_files')
+      .eq('id', req.params.id)
+      .eq('company_id', req.companyId)
+      .maybeSingle();
+    if(!rfp) return res.status(404).json({ error: 'RFP not found' });
+
+    const safe = (req.file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = req.params.projectId + '/rfps/' + req.params.id + '/' + Date.now() + '_' + safe;
+    let stored;
+    try {
+      stored = await uploadFile('files', path, req.file.buffer, req.file.mimetype);
+    } catch(e){
+      console.error('[RFP] attachment upload failed:', e && (e.message||e));
+      return res.status(500).json({ error: 'Upload failed' });
+    }
+
+    const entry = {
+      id: 'rf_' + Date.now(),
+      name: req.file.originalname,
+      path: stored,
+      size: req.file.size,
+      mime_type: req.file.mimetype,
+    };
+    const files = (Array.isArray(rfp.rfp_files) ? rfp.rfp_files : []).concat([entry]);
+    const { error } = await supabaseAdmin.from('rfps').update({ rfp_files: files }).eq('id', rfp.id);
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json(entry);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+rfpRouter.delete('/:id/files/:fileId', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const { data: rfp } = await supabaseAdmin.from('rfps')
+      .select('id, rfp_files').eq('id', req.params.id).eq('company_id', req.companyId).maybeSingle();
+    if(!rfp) return res.status(404).json({ error: 'RFP not found' });
+    const files = (Array.isArray(rfp.rfp_files) ? rfp.rfp_files : []);
+    const gone = files.find(function(f){ return f.id === req.params.fileId; });
+    const kept = files.filter(function(f){ return f.id !== req.params.fileId; });
+    if(gone && gone.path){
+      try {
+        const { deleteFile } = require('../lib/storage');
+        await deleteFile('files', gone.path);
+      } catch(e){ console.log('[RFP] attachment cleanup failed:', e.message); }
+    }
+    const { error } = await supabaseAdmin.from('rfps').update({ rfp_files: kept }).eq('id', rfp.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 rfpRouter.post('/:id/bids', async (req, res) => {
   const { contractor_name, contractor_id, amount, timeline_days, notes } = req.body;
   const { data, error } = await supabaseAdmin.from('rfp_bids')
@@ -465,6 +524,23 @@ rfpRouter.put('/:id/bids/:bidId', requireAuth, requireRole('owner','builder'), a
     .update({ status, reviewed_at: new Date().toISOString() }).eq('id', req.params.bidId).select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
+});
+
+// Signed URL for a file in this project's storage area.
+// The path guard is the whole point: it must live under this project, or an
+// authenticated user could sign paths belonging to other companies.
+const pFileRouter = require('express').Router({ mergeParams: true });
+pFileRouter.get('/signed-url', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const path = req.query.path;
+    if(!path) return res.status(400).json({ error: 'path required' });
+    if(path.indexOf('..') !== -1) return res.status(400).json({ error: 'Invalid path' });
+    if(path.indexOf(req.params.projectId + '/') !== 0){
+      return res.status(403).json({ error: 'That file does not belong to this project' });
+    }
+    const url = await getSignedUrl('files', path);
+    res.json({ url });
+  } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
 // PROJECT CONTRACTORS
@@ -550,7 +626,7 @@ publicRfpRouter.get('/:token', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('rfps')
-      .select('id, title, trade, trades, description, scope, deadline, start_date, duration, notes, status, project_id, company_id, attached_file_ids, rfp_bids(id)')
+      .select('id, title, trade, trades, description, scope, deadline, start_date, duration, notes, status, project_id, company_id, attached_file_ids, rfp_files, rfp_bids(id)')
       .eq('public_token', req.params.token)
       .single();
     if(error || !data) return res.status(404).json({ error: 'RFP not found' });
@@ -593,9 +669,74 @@ publicRfpRouter.get('/:token', async (req, res) => {
       files = files.filter(f => f.url);
     } catch(e){ /* no files */ }
 
+    // Files attached directly to the RFP by the builder (not library files).
+    try {
+      const own = Array.isArray(data.rfp_files) ? data.rfp_files : [];
+      const signed = await Promise.all(own.map(async function(f){
+        let url = null;
+        try { url = await getSignedUrl('files', f.path); } catch(e){}
+        return url ? { id: f.id, name: f.name, size: f.size, mime_type: f.mime_type, url: url } : null;
+      }));
+      files = files.concat(signed.filter(Boolean));
+    } catch(e){ /* none attached */ }
+
     const payload = Object.assign({}, data, { agreement, files });
     delete payload.attached_file_ids;
+    delete payload.rfp_files;
     res.json(payload);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// PUBLIC estimate upload. Anyone holding the RFP link can reach this, so it
+// is deliberately narrow: image/PDF only, 10 MB, and a cap on how many files
+// one token can accumulate. NOTE: the counter is per-process and resets on
+// deploy — a brake on casual abuse, not a real rate limiter.
+const RFP_ESTIMATE_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
+const RFP_ESTIMATE_MAX_BYTES = 10 * 1024 * 1024;
+const RFP_ESTIMATE_MAX_PER_TOKEN = 5;
+const _rfpUploadCounts = Object.create(null);
+
+publicRfpRouter.post('/:token/estimate', upload.single('file'), async (req, res) => {
+  try {
+    if(!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if(RFP_ESTIMATE_TYPES.indexOf(req.file.mimetype) === -1){
+      return res.status(400).json({ error: 'Estimates must be a PDF, JPG or PNG' });
+    }
+    if(req.file.size > RFP_ESTIMATE_MAX_BYTES){
+      return res.status(400).json({ error: 'File is too large (10 MB maximum)' });
+    }
+
+    const { data: rfp } = await supabaseAdmin.from('rfps')
+      .select('id, status, deadline, project_id')
+      .eq('public_token', req.params.token).maybeSingle();
+    if(!rfp) return res.status(404).json({ error: 'RFP not found' });
+    if(rfp.status !== 'open') return res.status(400).json({ error: 'RFP is no longer accepting bids' });
+    if(rfp.deadline && new Date(rfp.deadline) < new Date()){
+      return res.status(400).json({ error: 'Bid deadline has passed' });
+    }
+
+    const seen = _rfpUploadCounts[req.params.token] || 0;
+    if(seen >= RFP_ESTIMATE_MAX_PER_TOKEN){
+      return res.status(429).json({ error: 'Too many uploads for this RFP link' });
+    }
+    _rfpUploadCounts[req.params.token] = seen + 1;
+
+    const safe = (req.file.originalname || 'estimate').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = rfp.project_id + '/rfps/' + rfp.id + '/estimates/' + Date.now() + '_' + safe;
+    let stored;
+    try {
+      stored = await uploadFile('files', path, req.file.buffer, req.file.mimetype);
+    } catch(e){
+      console.error('[RFP] estimate upload failed:', e && (e.message||e));
+      return res.status(500).json({ error: 'Upload failed' });
+    }
+
+    res.status(201).json({
+      name: req.file.originalname,
+      path: stored,
+      size: req.file.size,
+      mime_type: req.file.mimetype,
+    });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
@@ -612,7 +753,7 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
       contractor_name, company_name, email, phone,
       trade, trades, company_info, reference_contacts,
       year_established, employees, license_number, certifications,
-      insurance_confirmed, agreement_accepted,
+      insurance_confirmed, agreement_accepted, estimate_files,
       amount, timeframe, timeline_days, notes,
     } = req.body;
     if(!contractor_name || !email) return res.status(400).json({ error: 'name and email required' });
@@ -672,6 +813,7 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
         reference_contacts:  refs,
         insurance_confirmed: !!insurance_confirmed,
         agreement_accepted:  !!agreement_accepted,
+        estimate_files:      Array.isArray(estimate_files) ? estimate_files : [],
         amount,
         timeframe:           timeframe || null,
         timeline_days:       (timeline_days != null && timeline_days !== '') ? timeline_days : null,
@@ -792,4 +934,4 @@ closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), a
   res.json({ success: true });
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter };
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter, pFileRouter };

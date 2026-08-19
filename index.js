@@ -18,7 +18,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, pFileRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
@@ -88,6 +88,8 @@ app.use('/projects/:projectId/phases',         phaseRoutes);
 app.use('/projects/:projectId/events',         projectEventRoutes);
 app.use('/projects/:projectId/budget',         budgetRoutes);
 app.use('/projects/:projectId/messages',       messageRoutes);
+// signed-url only; everything else falls through to fileRoutes below
+app.use('/projects/:projectId/files',          pFileRouter);
 app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
 app.use('/projects/:projectId/contractors',    pContractorRouter);
