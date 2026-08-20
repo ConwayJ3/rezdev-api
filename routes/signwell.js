@@ -187,7 +187,7 @@ router.post('/send-contract', requireAuth, requireRole('owner','builder','pm'), 
     }
 
     // 5. Generate the branded PDF
-    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', subcontractor:'Subcontractor Agreement', nda:'Non-Disclosure Agreement', change_order:'Change Order Authorization' };
+    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', nda:'Non-Disclosure Agreement' };
     const pdfBuffer = await generateContractPdf({
       title: titleMap[ctype] || 'Contract',
       bodyText: mergedBody,
@@ -597,7 +597,7 @@ router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','p
     const fileUrl = pdfUrlData.publicUrl;
 
     // 6. Create the contract record
-    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement', subcontractor:'Subcontractor Agreement', change_order:'Change Order Authorization' };
+    const titleMap = { client:'Construction Contract', contractor:'Contractor Agreement' };
     const title = providedTitle || titleMap[ctype] || 'Contract';
     const { data: contractRow } = await supabaseAdmin.from('contracts').insert({
       project_id, title, status:'draft', created_by: req.userId, contract_type: ctype, contracted_amount: 0, pdf_url: fileUrl,
