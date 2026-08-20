@@ -857,8 +857,11 @@ router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'),
       .eq('company_id', req.companyId).eq('contract_type', ctype).maybeSingle();
     if(!tmpl || (!tmpl.original_docx_url && !tmpl.docx_url)) return res.status(404).json({ error: 'No DOCX template uploaded for this type' });
 
-    // Always read the PRISTINE ORIGINAL text (tags are never baked in)
-    const origUrl = tmpl.original_docx_url || tmpl.docx_url;
+    // Always read the PRISTINE ORIGINAL text (tags are never baked in).
+    // Signed on demand so this keeps working with a private contracts bucket.
+    const { resolveStorageUrl } = require('../lib/storage');
+    const origUrl = await resolveStorageUrl('contracts', tmpl.original_docx_url || tmpl.docx_url);
+    if(!origUrl) return res.status(400).json({ error: 'Template document is missing' });
     const docxRes = await fetch(origUrl);
     if(!docxRes.ok) return res.status(400).json({ error: 'Could not download template DOCX' });
     const docxBuffer = Buffer.from(await docxRes.arrayBuffer());
@@ -886,7 +889,9 @@ router.get('/templates/:type/text', requireAuth, requireRole('owner','builder'),
 // Render a tagged DOCX buffer from the pristine original + the saved tag_rules.
 // This is the single source of truth: original never changes; tags are data.
 async function renderTaggedDocx(tmpl){
-  const origUrl = tmpl.original_docx_url || tmpl.docx_url;
+  const { resolveStorageUrl } = require('../lib/storage');
+  const origUrl = await resolveStorageUrl('contracts', tmpl.original_docx_url || tmpl.docx_url);
+  if(!origUrl) throw new Error('Template document is missing');
   const docxRes = await fetch(origUrl);
   if(!docxRes.ok) throw new Error('Could not download original template DOCX');
   const originalBuffer = Buffer.from(await docxRes.arrayBuffer());
@@ -994,13 +999,17 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
       .eq('id', req.params.contractId).maybeSingle();
     if(!contract) return res.status(404).json({ error: 'Contract not found' });
 
+    const { resolveStorageUrl } = require('../lib/storage');
+
     // Already cached — but only trust URLs we host ourselves (SignWell URLs can't be iframed)
     if(contract.signed_pdf_url && !/signwell\.com/i.test(contract.signed_pdf_url)){
-      return res.json({ url: contract.signed_pdf_url, signed: true });
+      const u = await resolveStorageUrl('contracts', contract.signed_pdf_url);
+      return res.json({ url: u, signed: true });
     }
 
     if(!contract.signwell_document_id){
-      return res.json({ url: contract.pdf_url || null, signed: false });
+      const u = await resolveStorageUrl('contracts', contract.pdf_url);
+      return res.json({ url: u, signed: false });
     }
 
     // Download the completed PDF BINARY from SignWell, then store it in our own storage.
@@ -1020,11 +1029,10 @@ router.get('/signed-pdf/:contractId', requireAuth, async (req, res) => {
     const { uploadFile } = require('../lib/storage');
     const fileName = `${req.companyId}/signed/${contract.id}_signed.pdf`;
     const storagePath = await uploadFile('contracts', fileName, pdfBuffer, 'application/pdf');
-    const { data: urlData } = supabaseAdmin.storage.from('contracts').getPublicUrl(storagePath);
-    const signedUrl = urlData.publicUrl;
-
-    await supabaseAdmin.from('contracts').update({ signed_pdf_url: signedUrl }).eq('id', contract.id);
-    res.json({ url: signedUrl, signed: true });
+    // Store the PATH; sign it for the response. A stored signed URL would expire.
+    await supabaseAdmin.from('contracts').update({ signed_pdf_url: storagePath }).eq('id', contract.id);
+    const viewUrl = await resolveStorageUrl('contracts', storagePath);
+    res.json({ url: viewUrl, signed: true });
   } catch(e){
     res.status(500).json({ error: e.message });
   }
@@ -1041,7 +1049,17 @@ router.get('/my-contracts', requireAuth, async (req, res) => {
       .ilike('recipient_email', email)
       .order('created_at', { ascending: false });
     if(error) return res.status(400).json({ error: error.message });
-    res.json(data || []);
+
+    // The portals render these URLs directly, so sign them here rather than
+    // changing three frontends.
+    const { resolveStorageUrl } = require('../lib/storage');
+    const rows = await Promise.all((data || []).map(async function(c){
+      const out = Object.assign({}, c);
+      if(c.pdf_url)        out.pdf_url        = await resolveStorageUrl('contracts', c.pdf_url);
+      if(c.signed_pdf_url) out.signed_pdf_url = await resolveStorageUrl('contracts', c.signed_pdf_url);
+      return out;
+    }));
+    res.json(rows);
   } catch(e){
     res.status(500).json({ error: e.message });
   }
