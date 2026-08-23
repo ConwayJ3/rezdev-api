@@ -18,7 +18,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, pFileRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lenderDrawRouter, pFileRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
@@ -109,6 +109,7 @@ app.use('/projects/:projectId/contracts',      ctrRouter);
 app.use('/projects/:projectId/payments',       payRouter);
 app.use('/projects/:projectId/warranties',     wrnRouter);
 app.use('/projects/:projectId/qc',             qcRouter);
+app.use('/projects/:projectId/lender-draws',    lenderDrawRouter);
 
 // ── Top-level routes ──────────────────────────────────────────────
 app.use('/contractors', contractorRoutes);

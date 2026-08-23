@@ -1008,6 +1008,236 @@ publicRfpRouter.post('/:token/bid', async (req, res) => {
 
 // exports moved to end of file
 
+// LENDER DRAWS ─────────────────────────────────────────────
+// The bank reimbursing project cost. Distinct from GC draws, which are the
+// builder drawing against their own fee.
+const lenderDrawRouter = require('express').Router({ mergeParams: true });
+
+// How much of each transaction has been FUNDED so far, across all draws.
+// A line's approved amount is apportioned pro rata over its transactions,
+// because the lender approves per line item, not per receipt.
+async function lenderFundedByTxn(projectId){
+  const funded = {};
+  const { data: draws } = await supabaseAdmin.from('lender_draws')
+    .select('id, status').eq('project_id', projectId);
+  const ids = (draws || []).map(function(d){ return d.id; });
+  if(!ids.length) return funded;
+
+  const { data: lines } = await supabaseAdmin.from('lender_draw_lines')
+    .select('*').in('draw_id', ids);
+
+  (lines || []).forEach(function(ln){
+    const approved = (ln.approved_amount === null || ln.approved_amount === undefined)
+      ? null : Number(ln.approved_amount);
+    if(approved === null || !approved) return;
+    const txnIds = Array.isArray(ln.transaction_ids) ? ln.transaction_ids : [];
+    const requested = Number(ln.requested_amount) || 0;
+    if(!txnIds.length || !requested) return;
+    const ratio = approved / requested;
+    // Each transaction in the line absorbs its share of what was approved.
+    txnIds.forEach(function(entry){
+      const tid = (entry && entry.id) ? entry.id : entry;
+      const share = (entry && entry.amount != null) ? Number(entry.amount) : (requested / txnIds.length);
+      funded[tid] = (funded[tid] || 0) + (share * ratio);
+    });
+  });
+  return funded;
+}
+
+// GET available — every transaction with an unfunded balance, grouped by line.
+lenderDrawRouter.get('/available', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: txns } = await supabaseAdmin.from('transactions')
+      .select('id, item_name, amount, payee, txn_date, section_id, attachments')
+      .eq('project_id', req.params.projectId)
+      .order('txn_date', { ascending: true });
+
+    const funded = await lenderFundedByTxn(req.params.projectId);
+    const groups = {};
+
+    (txns || []).forEach(function(t){
+      const amount = Number(t.amount) || 0;
+      const already = funded[t.id] || 0;
+      const outstanding = Math.round((amount - already) * 100) / 100;
+      if(outstanding <= 0.01) return;   // funded in full
+
+      const key = t.item_name || '(no item)';
+      if(!groups[key]) groups[key] = { item_name: key, section_id: t.section_id,
+                                       outstanding: 0, transactions: [] };
+      groups[key].outstanding += outstanding;
+      groups[key].transactions.push({
+        id: t.id, payee: t.payee, txn_date: t.txn_date,
+        amount: amount, funded: already, outstanding: outstanding,
+        attachment_count: Array.isArray(t.attachments) ? t.attachments.length : 0,
+      });
+    });
+
+    res.json(Object.keys(groups).map(function(k){ return groups[k]; }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+lenderDrawRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: draws, error } = await supabaseAdmin.from('lender_draws')
+      .select('*').eq('project_id', req.params.projectId)
+      .order('draw_number', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+
+    const ids = (draws || []).map(function(d){ return d.id; });
+    let lines = [];
+    if(ids.length){
+      const { data: l } = await supabaseAdmin.from('lender_draw_lines')
+        .select('*').in('draw_id', ids);
+      lines = l || [];
+    }
+    res.json((draws || []).map(function(d){
+      return Object.assign({}, d, {
+        lines: lines.filter(function(x){ return x.draw_id === d.id; }),
+      });
+    }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+lenderDrawRouter.post('/', requireAuth, requireRole('owner','builder','pm'),
+                      requireProjectAccess, async (req, res) => {
+  try {
+    const { lines, notes } = req.body;
+    if(!Array.isArray(lines) || !lines.length){
+      return res.status(400).json({ error: 'At least one line is required' });
+    }
+
+    const { data: last } = await supabaseAdmin.from('lender_draws')
+      .select('draw_number').eq('project_id', req.params.projectId)
+      .order('draw_number', { ascending: false }).limit(1);
+    const nextNumber = (last && last.length ? Number(last[0].draw_number) : 0) + 1;
+
+    const { data: draw, error } = await supabaseAdmin.from('lender_draws')
+      .insert({ project_id: req.params.projectId, draw_number: nextNumber,
+                status: 'draft', notes: notes || null, created_by: req.userId })
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+
+    const rows = lines.map(function(ln){
+      return {
+        draw_id: draw.id,
+        section_key: ln.section_key || null,
+        item_name: ln.item_name,
+        requested_amount: Number(ln.requested_amount) || 0,
+        transaction_ids: Array.isArray(ln.transaction_ids) ? ln.transaction_ids : [],
+      };
+    });
+    const { data: saved, error: lineErr } = await supabaseAdmin
+      .from('lender_draw_lines').insert(rows).select();
+    if(lineErr) return res.status(400).json({ error: lineErr.message });
+
+    res.status(201).json(Object.assign({}, draw, { lines: saved || [] }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Edit while unfunded. Once funded the draw is a record of what happened.
+lenderDrawRouter.put('/:id', requireAuth, requireRole('owner','builder','pm'),
+                     requireProjectAccess, async (req, res) => {
+  try {
+    const { data: draw } = await supabaseAdmin.from('lender_draws')
+      .select('*').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!draw) return res.status(404).json({ error: 'Draw not found' });
+    if(draw.status === 'funded' || draw.status === 'partially_funded'){
+      return res.status(409).json({ error: 'A funded draw cannot be edited' });
+    }
+
+    const { notes, lines } = req.body;
+    if(notes !== undefined){
+      await supabaseAdmin.from('lender_draws').update({ notes }).eq('id', draw.id);
+    }
+    if(Array.isArray(lines)){
+      await supabaseAdmin.from('lender_draw_lines').delete().eq('draw_id', draw.id);
+      const rows = lines.map(function(ln){
+        return {
+          draw_id: draw.id,
+          section_key: ln.section_key || null,
+          item_name: ln.item_name,
+          requested_amount: Number(ln.requested_amount) || 0,
+          transaction_ids: Array.isArray(ln.transaction_ids) ? ln.transaction_ids : [],
+        };
+      });
+      if(rows.length) await supabaseAdmin.from('lender_draw_lines').insert(rows);
+    }
+
+    const { data: out } = await supabaseAdmin.from('lender_draws')
+      .select('*').eq('id', draw.id).single();
+    const { data: outLines } = await supabaseAdmin.from('lender_draw_lines')
+      .select('*').eq('draw_id', draw.id);
+    res.json(Object.assign({}, out, { lines: outLines || [] }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+lenderDrawRouter.post('/:id/submit', requireAuth, requireRole('owner','builder','pm'),
+                      requireProjectAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('lender_draws')
+      .update({ status: 'submitted', submitted_at: new Date().toISOString() })
+      .eq('id', req.params.id).eq('project_id', req.params.projectId)
+      .select().single();
+    if(error) return res.status(400).json({ error: error.message });
+    if(!data) return res.status(404).json({ error: 'Draw not found' });
+    res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Record what the lender actually approved, per line. Anything short stays
+// outstanding and reappears in the next draw's available pool automatically.
+lenderDrawRouter.post('/:id/fund', requireAuth, requireRole('owner','builder','pm'),
+                      requireProjectAccess, async (req, res) => {
+  try {
+    const { lines, funded_at } = req.body;
+    if(!Array.isArray(lines)) return res.status(400).json({ error: 'lines required' });
+
+    const { data: draw } = await supabaseAdmin.from('lender_draws')
+      .select('*').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!draw) return res.status(404).json({ error: 'Draw not found' });
+
+    for(const ln of lines){
+      if(!ln.id) continue;
+      await supabaseAdmin.from('lender_draw_lines')
+        .update({ approved_amount: Number(ln.approved_amount) || 0,
+                  variance_note: ln.variance_note || null })
+        .eq('id', ln.id).eq('draw_id', draw.id);
+    }
+
+    const { data: allLines } = await supabaseAdmin.from('lender_draw_lines')
+      .select('requested_amount, approved_amount').eq('draw_id', draw.id);
+    const requested = (allLines||[]).reduce(function(s,l){ return s + (Number(l.requested_amount)||0); }, 0);
+    const approved  = (allLines||[]).reduce(function(s,l){ return s + (Number(l.approved_amount)||0); }, 0);
+    const status = (approved + 0.01 >= requested) ? 'funded' : 'partially_funded';
+
+    const { data: out, error } = await supabaseAdmin.from('lender_draws')
+      .update({ status, funded_at: funded_at || new Date().toISOString() })
+      .eq('id', draw.id).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.json(Object.assign({}, out, { requested_total: requested, approved_total: approved }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+lenderDrawRouter.delete('/:id', requireAuth, requireRole('owner','builder'),
+                        requireProjectAccess, async (req, res) => {
+  try {
+    const { data: draw } = await supabaseAdmin.from('lender_draws')
+      .select('status').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!draw) return res.status(404).json({ error: 'Draw not found' });
+    if(draw.status !== 'draft'){
+      return res.status(409).json({ error: 'Only draft draws can be deleted' });
+    }
+    const { error } = await supabaseAdmin.from('lender_draws')
+      .delete().eq('id', req.params.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // GC DRAWS ─────────────────────────────────────────────────
 const gcDrawRouter = require('express').Router({ mergeParams: true });
 gcDrawRouter.get('/', requireAuth, async (req, res) => {
@@ -1113,4 +1343,4 @@ closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), a
   res.json({ success: true });
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter, pFileRouter };
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter, pFileRouter, lenderDrawRouter };
