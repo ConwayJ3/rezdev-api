@@ -2,6 +2,9 @@ const express = require('express');
 const router  = express.Router({ mergeParams: true });
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireRole, requireProjectAccess } = require('../middleware/auth');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+const { uploadFile, deleteFile } = require('../lib/storage');
 
 // GET /projects/:projectId/budget — full budget snapshot
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
@@ -147,11 +150,16 @@ router.post('/transactions', requireAuth, requireRole('owner','builder','pm'), r
 
 // PUT /projects/:projectId/budget/transactions/:id
 router.put('/transactions/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
-  const { item_name, amount, payee, txn_date, notes } = req.body;
+  const { item_name, amount, payee, txn_date, notes, attachments } = req.body;
+
+  const patch = { item_name, amount, payee, txn_date: txn_date || null, notes };
+  // Only touch attachments when the caller sent them — a normal edit must not
+  // wipe receipts that were uploaded separately.
+  if(Array.isArray(attachments)) patch.attachments = attachments;
 
   const { data, error } = await supabaseAdmin
     .from('transactions')
-    .update({ item_name, amount, payee, txn_date: txn_date || null, notes })
+    .update(patch)
     .eq('id', req.params.id)
     .eq('project_id', req.params.projectId)
     .select()
@@ -159,6 +167,67 @@ router.put('/transactions/:id', requireAuth, requireRole('owner','builder','pm')
 
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
+});
+
+// POST /projects/:projectId/budget/transactions/:id/attachments
+// Receipts and invoices backing a transaction. Private bucket — these carry
+// vendor pricing and are builder-only.
+router.post('/transactions/:id/attachments', requireAuth, requireRole('owner','builder','pm'),
+            requireProjectAccess, upload.array('files', 10), async (req, res) => {
+  try {
+    if(!req.files || !req.files.length) return res.status(400).json({ error: 'No files uploaded' });
+
+    const { data: txn } = await supabaseAdmin.from('transactions')
+      .select('id, attachments').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!txn) return res.status(404).json({ error: 'Transaction not found' });
+
+    const existing = Array.isArray(txn.attachments) ? txn.attachments : [];
+    const added = [];
+    for(const file of req.files){
+      const safe = (file.originalname || 'receipt').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = req.params.projectId + '/receipts/' + req.params.id + '/' + Date.now() + '_' + safe;
+      try {
+        const stored = await uploadFile('files', path, file.buffer, file.mimetype);
+        added.push({ id: 'rc_' + Date.now() + '_' + added.length,
+                     name: file.originalname, path: stored,
+                     size: file.size, mime_type: file.mimetype });
+      } catch(e){
+        console.error('[Budget] receipt upload failed:', e && (e.message||e));
+      }
+    }
+    if(!added.length) return res.status(500).json({ error: 'Upload failed' });
+
+    const merged = existing.concat(added);
+    const { error } = await supabaseAdmin.from('transactions')
+      .update({ attachments: merged }).eq('id', txn.id);
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ attachments: merged, added: added.length });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// DELETE one attachment off a transaction
+router.delete('/transactions/:id/attachments/:fileId', requireAuth,
+              requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
+  try {
+    const { data: txn } = await supabaseAdmin.from('transactions')
+      .select('id, attachments').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!txn) return res.status(404).json({ error: 'Transaction not found' });
+
+    const existing = Array.isArray(txn.attachments) ? txn.attachments : [];
+    const gone = existing.find(function(f){ return f.id === req.params.fileId; });
+    const kept = existing.filter(function(f){ return f.id !== req.params.fileId; });
+    if(gone && gone.path){
+      try { await deleteFile('files', gone.path); }
+      catch(e){ console.log('[Budget] receipt cleanup failed:', e.message); }
+    }
+    const { error } = await supabaseAdmin.from('transactions')
+      .update({ attachments: kept }).eq('id', txn.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ attachments: kept });
+  } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
 // DELETE /projects/:projectId/budget/transactions/:id
