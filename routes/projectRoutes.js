@@ -748,7 +748,7 @@ lienRouter.get('/', requireAuth, async (req, res) => {
 lienRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
     const { contractor_id, contractor_name, amount, waiver_type,
-            draw_id, through_date, notes } = req.body;
+            draw_id, through_date, notes, line_item_names } = req.body;
     const { data, error } = await supabaseAdmin.from('lien_waivers').insert({
       project_id: req.params.projectId,
       contractor_id, contractor_name, amount,
@@ -756,6 +756,7 @@ lienRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (re
       draw_id: draw_id || null,
       through_date: through_date || null,
       notes: notes || null,
+      line_item_names: Array.isArray(line_item_names) ? line_item_names : [],
       requested_at: new Date().toISOString(),
       status: 'pending',
     }).select().single();
