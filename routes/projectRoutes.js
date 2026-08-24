@@ -4,6 +4,7 @@
 const express = require('express');
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireRole, requireProjectAccess } = require('../middleware/auth');
+const { fillDocx, convertDocxToPdf, applyTagsToDocx } = require('../lib/docxContract');
 
 const coRouter = express.Router({ mergeParams: true });
 
@@ -42,7 +43,7 @@ coRouter.put('/:id', requireAuth, requireProjectAccess, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 const { sendRfpInvite, sendBidReceived, sendBidDeclined, sendBidAwarded, sendLienWaiverRequest } = require('../lib/email');
 const multer  = require('multer');
-const { uploadFile, getSignedUrl } = require('../lib/storage');
+const { uploadFile, getSignedUrl, resolveStorageUrl } = require('../lib/storage');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const selRouter = express.Router({ mergeParams: true });
 
@@ -803,11 +804,58 @@ lienRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), asyn
     res.json({ ok: true });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
+// Merge the lien_waiver template + render a PDF for a signed waiver.
+// Mirrors the contract send pipeline in signwell.js; no SignWell involved —
+// this is typed-and-recorded, not a SignWell document.
+async function renderLienWaiverPdf(waiver, project, company, signerName, signerTitle){
+  const { data: tmpl } = await supabaseAdmin
+    .from('contract_templates').select('*')
+    .eq('company_id', company.id).eq('contract_type', 'lien_waiver').maybeSingle();
+  if(!tmpl || (!tmpl.original_docx_url && !tmpl.docx_url)){
+    throw new Error('No lien waiver template configured for this company');
+  }
+
+  const origUrl = await resolveStorageUrl('contracts', tmpl.original_docx_url || tmpl.docx_url);
+  if(!origUrl) throw new Error('Lien waiver template document is missing');
+  const docxRes = await fetch(origUrl);
+  if(!docxRes.ok) throw new Error('Could not download the lien waiver template');
+  const originalBuffer = Buffer.from(await docxRes.arrayBuffer());
+
+  const rules = Array.isArray(tmpl.tag_rules) ? tmpl.tag_rules : [];
+  const tagged = rules.length ? applyTagsToDocx(originalBuffer, rules) : originalBuffer;
+
+  const addr = (project && project.address) || '';
+  const parts = addr.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  const projectAddress = parts[0] || addr;
+  const projectCity = parts.length > 1 ? parts[1] : '';
+  const projectState = parts.length > 2 ? parts[2].split(' ')[0] : '';
+
+  const signedAt = new Date();
+  const data = {
+    waiver_amount: waiver.amount != null ? '$' + Number(waiver.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '',
+    waiver_scope: (Array.isArray(waiver.line_item_names) ? waiver.line_item_names : []).join(', '),
+    through_date: waiver.through_date || '',
+    draw_number: waiver.draw_number ? ('Draw ' + waiver.draw_number) : '',
+    contractor_name: waiver.contractor_name || '',
+    contractor_company: waiver.contractor_name || '',
+    contractor_phone: waiver.contractor_phone || '',
+    project_name: (project && (project.name || project.address)) || '',
+    project_id: (project && project.id) || '',
+    project_address: projectAddress,
+    project_city: projectCity,
+    project_state: projectState,
+    signature_name: signerName || '',
+    signature_title: signerTitle || '',
+    signature_date: signedAt.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' }),
+  };
+
+  const filled = fillDocx(tagged, data);
+  const pdfBuffer = await convertDocxToPdf(filled, 'lien-waiver.docx');
+  return pdfBuffer;
+}
+
 lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
   try {
-    // A lien waiver is a legal release. Scope it to the project, and only let
-    // the named contractor — or the builder — sign. Previously any
-    // authenticated user knowing the id could sign anyone's waiver.
     const { data: w } = await supabaseAdmin.from('lien_waivers')
       .select('*').eq('id', req.params.id)
       .eq('project_id', req.params.projectId).maybeSingle();
@@ -816,20 +864,68 @@ lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
 
     const isBuilder = ['owner','builder','pm'].includes(req.userRole);
     let isNamedContractor = false;
+    let contractorPhone = '';
     if(w.contractor_id){
       const { data: c } = await supabaseAdmin.from('contractors')
-        .select('user_id').eq('id', w.contractor_id).maybeSingle();
+        .select('user_id, phone').eq('id', w.contractor_id).maybeSingle();
       isNamedContractor = !!(c && c.user_id && c.user_id === req.userId);
+      contractorPhone = (c && c.phone) || '';
     }
     if(!isBuilder && !isNamedContractor){
       return res.status(403).json({ error: 'You are not the contractor named on this waiver' });
     }
 
+    const { signer_name, signer_title } = req.body;
+    if(!signer_name || !String(signer_name).trim()){
+      return res.status(400).json({ error: 'A typed signature is required' });
+    }
+
+    const { data: project } = await supabaseAdmin.from('projects')
+      .select('*').eq('id', req.params.projectId).maybeSingle();
+    const { data: company } = await supabaseAdmin.from('companies')
+      .select('*').eq('id', req.companyId).maybeSingle();
+    let drawNumber = null;
+    if(w.draw_id){
+      const { data: d } = await supabaseAdmin.from('lender_draws')
+        .select('draw_number').eq('id', w.draw_id).maybeSingle();
+      drawNumber = d && d.draw_number;
+    }
+
+    let pdfPath = null;
+    try {
+      const pdfBuffer = await renderLienWaiverPdf(
+        Object.assign({}, w, { contractor_phone: contractorPhone, draw_number: drawNumber }),
+        project, company, signer_name, signer_title
+      );
+      const safeName = 'waiver_' + w.id + '_' + Date.now() + '.pdf';
+      pdfPath = await uploadFile('files', req.params.projectId + '/waivers/' + safeName, pdfBuffer, 'application/pdf');
+    } catch(e){
+      console.error('[Lien] PDF generation failed:', e.message);
+      return res.status(500).json({ error: 'Could not generate the signed PDF: ' + e.message });
+    }
+
     const { data, error } = await supabaseAdmin.from('lien_waivers')
-      .update({ status: 'signed', signed_at: new Date().toISOString() })
+      .update({
+        status: 'signed', signed_at: new Date().toISOString(),
+        signer_name: signer_name.trim(),
+        signer_title: (signer_title || '').trim(),
+        pdf_url: pdfPath,
+      })
       .eq('id', w.id).select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Signed URL for a waiver PDF (private bucket).
+lienRouter.get('/:id/pdf-url', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: w } = await supabaseAdmin.from('lien_waivers')
+      .select('pdf_url').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!w || !w.pdf_url) return res.status(404).json({ error: 'No signed PDF yet' });
+    const url = await resolveStorageUrl('files', w.pdf_url);
+    res.json({ url });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
