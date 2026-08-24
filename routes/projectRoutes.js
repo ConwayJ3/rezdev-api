@@ -824,15 +824,14 @@ async function renderLienWaiverPdf(waiver, project, company, signerName, signerT
   const rules = Array.isArray(tmpl.tag_rules) ? tmpl.tag_rules : [];
   const tagged = rules.length ? applyTagsToDocx(originalBuffer, rules) : originalBuffer;
 
-  const addr = (project && project.address) || '';
-  const parts = addr.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
-  const projectAddress = parts[0] || addr;
-  const projectCity = parts.length > 1 ? parts[1] : '';
-  const projectState = parts.length > 2 ? parts[2].split(' ')[0] : '';
+  // city/state are their OWN columns on projects — not parsed from address.
+  const projectAddress = (project && project.address) || '';
+  const projectCity = (project && project.city) || '';
+  const projectState = (project && project.state) || '';
 
   const signedAt = new Date();
   const data = {
-    waiver_amount: waiver.amount != null ? '$' + Number(waiver.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '',
+    waiver_amount: waiver.amount != null ? Number(waiver.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '',  // no '$' — the template already prints one
     waiver_scope: (Array.isArray(waiver.line_item_names) ? waiver.line_item_names : []).join(', '),
     through_date: waiver.through_date || '',
     draw_number: waiver.draw_number ? ('Draw ' + waiver.draw_number) : '',
