@@ -843,6 +843,12 @@ async function renderLienWaiverPdf(waiver, project, company, signerName, signerT
     project_address: projectAddress,
     project_city: projectCity,
     project_state: projectState,
+    // One tag for the whole address — avoids tagging three adjacent blanks.
+    project_full_address: [
+      projectAddress,
+      [projectCity, projectState].filter(Boolean).join(', '),
+      (project && project.zip) || '',
+    ].filter(Boolean).join(', '),
     signature_name: signerName || '',
     signature_title: signerTitle || '',
     signature_date: signedAt.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' }),
