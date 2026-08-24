@@ -40,7 +40,7 @@ coRouter.put('/:id', requireAuth, requireProjectAccess, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 // SELECTIONS — /projects/:projectId/selections
 // ═══════════════════════════════════════════════════════════════════
-const { sendRfpInvite, sendBidReceived, sendBidDeclined, sendBidAwarded } = require('../lib/email');
+const { sendRfpInvite, sendBidReceived, sendBidDeclined, sendBidAwarded, sendLienWaiverRequest } = require('../lib/email');
 const multer  = require('multer');
 const { uploadFile, getSignedUrl } = require('../lib/storage');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -727,22 +727,95 @@ pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder',
 const lienRouter = require('express').Router({ mergeParams: true });
 lienRouter.get('/', requireAuth, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin.from('lien_waivers').select('*').eq('project_id', req.params.projectId).order('created_at', { ascending: false });
+    let q = supabaseAdmin.from('lien_waivers').select('*').eq('project_id', req.params.projectId);
+    if(req.query.draw_id) q = q.eq('draw_id', req.query.draw_id);
+    const { data, error } = await q.order('created_at', { ascending: false });
     if(error) return res.status(400).json({ error: error.message });
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 lienRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { contractor_id, contractor_name, amount, waiver_type } = req.body;
-    const { data, error } = await supabaseAdmin.from('lien_waivers').insert({ project_id: req.params.projectId, contractor_id, contractor_name, amount, waiver_type: waiver_type||'conditional', status: 'pending' }).select().single();
+    const { contractor_id, contractor_name, amount, waiver_type,
+            draw_id, through_date, notes } = req.body;
+    const { data, error } = await supabaseAdmin.from('lien_waivers').insert({
+      project_id: req.params.projectId,
+      contractor_id, contractor_name, amount,
+      waiver_type: waiver_type || 'conditional',
+      draw_id: draw_id || null,
+      through_date: through_date || null,
+      notes: notes || null,
+      requested_at: new Date().toISOString(),
+      status: 'pending',
+    }).select().single();
     if(error) return res.status(400).json({ error: error.message });
+
+    // Tell the sub. A waiver sitting unseen in a portal helps nobody.
+    try {
+      let email = null, name = contractor_name;
+      if(contractor_id){
+        const { data: c } = await supabaseAdmin.from('contractors')
+          .select('email, contact_name, company_name').eq('id', contractor_id).maybeSingle();
+        if(c){ email = c.email; name = name || c.contact_name || c.company_name; }
+      }
+      if(email){
+        const { data: co } = await supabaseAdmin.from('companies')
+          .select('name').eq('id', req.companyId).maybeSingle();
+        const { data: proj } = await supabaseAdmin.from('projects')
+          .select('name, address').eq('id', req.params.projectId).maybeSingle();
+        await sendLienWaiverRequest({
+          to: email, contractorName: name,
+          companyName: co && co.name,
+          projectName: proj ? (proj.name || proj.address) : '',
+          amount, throughDate: through_date,
+        });
+      }
+    } catch(e){ console.log('[Lien] waiver request email failed:', e.message); }
+
     res.json(data);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Remove an unsigned request. A signed waiver is a legal release — it stays.
+lienRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { data: w } = await supabaseAdmin.from('lien_waivers')
+      .select('id, status').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!w) return res.status(404).json({ error: 'Waiver not found' });
+    if(w.status === 'signed'){
+      return res.status(409).json({ error: 'A signed waiver cannot be deleted' });
+    }
+    const { error } = await supabaseAdmin.from('lien_waivers').delete().eq('id', w.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 lienRouter.put('/:id/sign', requireAuth, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin.from('lien_waivers').update({ status: 'signed', signed_at: new Date().toISOString() }).eq('id', req.params.id).select().single();
+    // A lien waiver is a legal release. Scope it to the project, and only let
+    // the named contractor — or the builder — sign. Previously any
+    // authenticated user knowing the id could sign anyone's waiver.
+    const { data: w } = await supabaseAdmin.from('lien_waivers')
+      .select('*').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!w) return res.status(404).json({ error: 'Waiver not found' });
+    if(w.status === 'signed') return res.status(409).json({ error: 'Already signed' });
+
+    const isBuilder = ['owner','builder','pm'].includes(req.userRole);
+    let isNamedContractor = false;
+    if(w.contractor_id){
+      const { data: c } = await supabaseAdmin.from('contractors')
+        .select('user_id').eq('id', w.contractor_id).maybeSingle();
+      isNamedContractor = !!(c && c.user_id && c.user_id === req.userId);
+    }
+    if(!isBuilder && !isNamedContractor){
+      return res.status(403).json({ error: 'You are not the contractor named on this waiver' });
+    }
+
+    const { data, error } = await supabaseAdmin.from('lien_waivers')
+      .update({ status: 'signed', signed_at: new Date().toISOString() })
+      .eq('id', w.id).select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
