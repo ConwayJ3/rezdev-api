@@ -707,6 +707,17 @@ pContractorRouter.get('/', requireAuth, async (req, res) => {
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
+pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from('project_contractors')
+      .delete()
+      .eq('project_id', req.params.projectId)
+      .eq('user_id', req.params.userId);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 pContractorRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
     const { user_id, trade } = req.body;

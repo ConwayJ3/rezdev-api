@@ -15,6 +15,88 @@ router.get('/', requireAuth, async (req, res) => {
   res.json(data);
 });
 
+// POST /contractors/:id/invite — give a directory contractor portal access.
+// Without this, a contractor added by hand can never sign a lien waiver or
+// see their contracts: only the RFP award flow created accounts.
+router.post('/:id/invite', requireAuth, requireRole('owner','builder'), async (req, res) => {
+  try {
+    const { data: c } = await supabaseAdmin.from('contractors')
+      .select('*').eq('id', req.params.id).eq('company_id', req.companyId).maybeSingle();
+    if(!c) return res.status(404).json({ error: 'Contractor not found' });
+    if(c.user_id) return res.status(409).json({ error: 'This contractor already has portal access' });
+    if(!c.email) return res.status(400).json({ error: 'Add an email address before inviting' });
+
+    const emailNorm = String(c.email).trim().toLowerCase();
+    const first = (c.contact_name || c.company_name || 'Contractor').split(' ')[0];
+    const last  = (c.contact_name || '').split(' ').slice(1).join(' ');
+
+    let userId = null;
+    const tempPassword = 'RezDev' + Math.random().toString(36).slice(2,12) + '!A';
+    const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+      email: emailNorm,
+      password: tempPassword,
+      email_confirm: true,
+      user_metadata: { first_name: first, last_name: last, role: 'contractor' },
+    });
+
+    if(authErr){
+      if(/already|registered|exists/i.test(authErr.message)){
+        // They already have an account from elsewhere — link it rather than fail.
+        const { data: existing } = await supabaseAdmin.from('users')
+          .select('id').ilike('email', emailNorm).maybeSingle();
+        userId = existing && existing.id;
+        if(!userId) return res.status(409).json({ error: 'That email already has an account we cannot link' });
+      } else {
+        return res.status(400).json({ error: authErr.message });
+      }
+    } else {
+      userId = authUser && authUser.user && authUser.user.id;
+    }
+    if(!userId) return res.status(500).json({ error: 'Could not create the account' });
+
+    try {
+      await supabaseAdmin.from('users').insert({
+        id: userId, company_id: req.companyId,
+        first_name: first, last_name: last,
+        email: emailNorm, role: 'contractor', status: 'pending',
+      });
+    } catch(e){ /* profile may already exist */ }
+
+    await supabaseAdmin.from('contractors')
+      .update({ user_id: userId }).eq('id', c.id);
+
+    const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
+    const { data: linkData } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery', email: emailNorm,
+      options: { redirectTo: appUrl + '/set-password.html' },
+    });
+    const setupUrl = (linkData && linkData.properties && linkData.properties.action_link)
+                     || (appUrl + '/set-password.html');
+
+    let builderName = '', companyName = '';
+    try {
+      const { data: me } = await supabaseAdmin.from('users')
+        .select('first_name,last_name').eq('id', req.userId).maybeSingle();
+      if(me) builderName = [me.first_name, me.last_name].filter(Boolean).join(' ');
+      const { data: co } = await supabaseAdmin.from('companies')
+        .select('name').eq('id', req.companyId).maybeSingle();
+      if(co) companyName = co.name;
+    } catch(e){ /* non-fatal */ }
+
+    try {
+      const { sendClientInvite } = require('../lib/email');
+      await sendClientInvite({
+        to: emailNorm, clientName: first, builderName, companyName,
+        setupUrl, role: 'contractor',
+      });
+    } catch(e){
+      return res.status(502).json({ error: 'Account created but the invite email failed: ' + e.message });
+    }
+
+    res.json({ success: true, user_id: userId });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // GET /contractors/:id
 router.get('/:id', requireAuth, async (req, res) => {
   const { data, error } = await req.db
