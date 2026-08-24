@@ -127,7 +127,7 @@ router.post('/', requireAuth, requireRole('owner','builder'), async (req, res) =
   const { data, error } = await supabaseAdmin
     .from('contractors')
     .insert({ company_id: req.companyId, company_name, contact_name, trade, email, phone,
-      address, license_number, insurance_exp, insurance_carrier, notes })
+      address, license_number, insurance_exp: insurance_exp || null, insurance_carrier, notes })
     .select()
     .single();
 
@@ -142,6 +142,8 @@ router.put('/:id', requireAuth, requireRole('owner','builder'), async (req, res)
     'bank_holder','bank_name','bank_account_type','bank_account','wire_routing','ach_routing'];
   const updates = {};
   allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
+  // Postgres rejects '' for a date column. A blank form field means "no date".
+  if(updates.insurance_exp === '') updates.insurance_exp = null;
   updates.updated_at = new Date().toISOString();
 
   const { data, error } = await supabaseAdmin
