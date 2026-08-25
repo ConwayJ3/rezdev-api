@@ -1431,6 +1431,255 @@ lenderDrawRouter.post('/:id/fund', requireAuth, requireRole('owner','builder','p
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
+// ── Draw package ───────────────────────────────────────────
+// One PDF for the lender: cover sheet, then per line item a divider, that
+// line's receipts, and the waivers covering it.
+
+function drawPackageCoverHtml(opts){
+  const esc = function(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  };
+  const money = function(n){
+    return '$' + (Number(n)||0).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  };
+  const rows = (opts.lines||[]).map(function(l){
+    return '<tr>'
+      + '<td>' + esc(l.item_name) + '</td>'
+      + '<td class="r">' + money(l.requested_amount) + '</td>'
+      + '</tr>';
+  }).join('');
+
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'body{font-family:Helvetica,Arial,sans-serif;color:#0C2340;margin:48px;}'
+    + 'h1{font-size:22px;margin:0 0 4px;}'
+    + '.sub{color:#6b7280;font-size:13px;margin-bottom:28px;}'
+    + '.meta{width:100%;margin-bottom:28px;font-size:13px;}'
+    + '.meta td{padding:4px 0;}'
+    + '.meta .k{color:#6b7280;width:150px;}'
+    + 'table.items{width:100%;border-collapse:collapse;font-size:13px;}'
+    + 'table.items th{text-align:left;border-bottom:2px solid #0C2340;padding:8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;}'
+    + 'table.items td{padding:8px 6px;border-bottom:1px solid #e3e8ee;}'
+    + 'td.r,th.r{text-align:right;}'
+    + 'tr.total td{font-weight:700;border-top:2px solid #0C2340;border-bottom:none;padding-top:12px;}'
+    + '</style></head><body>'
+    + '<h1>' + esc(opts.companyName || 'Draw Request') + '</h1>'
+    + '<div class="sub">Draw Request Package</div>'
+    + '<table class="meta">'
+    +   '<tr><td class="k">Project</td><td>' + esc(opts.projectName) + '</td></tr>'
+    +   '<tr><td class="k">Draw Number</td><td>Draw ' + esc(opts.drawNumber) + '</td></tr>'
+    +   '<tr><td class="k">Date</td><td>' + esc(opts.date) + '</td></tr>'
+    +   (opts.notes ? '<tr><td class="k">Notes</td><td>' + esc(opts.notes) + '</td></tr>' : '')
+    + '</table>'
+    + '<table class="items"><thead><tr><th>Line Item</th><th class="r">Amount Requested</th></tr></thead>'
+    + '<tbody>' + rows
+    + '<tr class="total"><td>Total</td><td class="r">' + money(opts.total) + '</td></tr>'
+    + '</tbody></table>'
+    + '</body></html>';
+}
+
+function drawPackageDividerHtml(title, subtitle){
+  const esc = function(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  };
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'body{font-family:Helvetica,Arial,sans-serif;color:#0C2340;margin:0;}'
+    + '.wrap{height:90vh;display:flex;flex-direction:column;align-items:center;justify-content:center;}'
+    + 'h2{font-size:26px;margin:0 0 8px;}'
+    + '.s{color:#6b7280;font-size:14px;}'
+    + '</style></head><body><div class="wrap">'
+    + '<h2>' + esc(title) + '</h2>'
+    + '<div class="s">' + esc(subtitle || '') + '</div>'
+    + '</div></body></html>';
+}
+
+// Assemble the package in ONE CloudConvert job: import each part, convert the
+// HTML/image parts to PDF, merge in order, export.
+async function buildDrawPackage(parts){
+  const key = process.env.CLOUDCONVERT_API_KEY;
+  if(!key) throw new Error('CLOUDCONVERT_API_KEY is not configured');
+  const CC = 'https://api.cloudconvert.com/v2';
+  const headers = { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
+
+  const tasks = {};
+  const mergeInputs = [];
+
+  parts.forEach(function(part, idx){
+    const imp = 'imp' + idx;
+    if(part.kind === 'html'){
+      tasks[imp] = { operation: 'import/raw', file: part.html, filename: 'part' + idx + '.html' };
+      tasks['cv' + idx] = { operation: 'convert', input: imp, input_format: 'html', output_format: 'pdf' };
+      mergeInputs.push('cv' + idx);
+    } else if(part.kind === 'url'){
+      tasks[imp] = { operation: 'import/url', url: part.url, filename: part.filename || ('part'+idx) };
+      if(part.convert){
+        tasks['cv' + idx] = { operation: 'convert', input: imp, output_format: 'pdf' };
+        mergeInputs.push('cv' + idx);
+      } else {
+        mergeInputs.push(imp);
+      }
+    }
+  });
+
+  tasks['merge'] = { operation: 'merge', input: mergeInputs, output_format: 'pdf' };
+  tasks['export'] = { operation: 'export/url', input: 'merge' };
+
+  const jobRes = await fetch(CC + '/jobs', {
+    method: 'POST', headers, body: JSON.stringify({ tasks: tasks }),
+  });
+  const job = await jobRes.json();
+  if(!jobRes.ok) throw new Error('CloudConvert job failed: ' + JSON.stringify(job));
+
+  const jobId = job.data.id;
+  let exportTask = null;
+  for(let i = 0; i < 90; i++){
+    await new Promise(function(r){ setTimeout(r, 1000); });
+    const st = await (await fetch(CC + '/jobs/' + jobId, { headers })).json();
+    if(st.data.status === 'finished'){
+      exportTask = st.data.tasks.find(function(t){ return t.name === 'export'; });
+      break;
+    }
+    if(st.data.status === 'error'){
+      throw new Error('CloudConvert errored: ' + JSON.stringify(
+        st.data.tasks.filter(function(t){ return t.status === 'error'; })));
+    }
+  }
+  if(!exportTask || !exportTask.result || !exportTask.result.files || !exportTask.result.files[0]){
+    throw new Error('Package build timed out');
+  }
+  const out = await fetch(exportTask.result.files[0].url);
+  if(!out.ok) throw new Error('Could not download the built package');
+  return Buffer.from(await out.arrayBuffer());
+}
+
+lenderDrawRouter.post('/:id/package', requireAuth, requireRole('owner','builder','pm'),
+                      requireProjectAccess, async (req, res) => {
+  try {
+    const { data: draw } = await supabaseAdmin.from('lender_draws')
+      .select('*').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!draw) return res.status(404).json({ error: 'Draw not found' });
+
+    const { data: lines } = await supabaseAdmin.from('lender_draw_lines')
+      .select('*').eq('draw_id', draw.id);
+    if(!lines || !lines.length) return res.status(400).json({ error: 'This draw has no line items' });
+
+    const { data: project } = await supabaseAdmin.from('projects')
+      .select('*').eq('id', req.params.projectId).maybeSingle();
+    const { data: company } = await supabaseAdmin.from('companies')
+      .select('name').eq('id', req.companyId).maybeSingle();
+    const { data: waivers } = await supabaseAdmin.from('lien_waivers')
+      .select('*').eq('draw_id', draw.id).eq('status', 'signed');
+
+    // Every transaction referenced by this draw, so receipts can be attached
+    // to the line that claimed them.
+    const txnIds = [];
+    lines.forEach(function(l){
+      (Array.isArray(l.transaction_ids) ? l.transaction_ids : []).forEach(function(e){
+        const id = (e && e.id) ? e.id : e;
+        if(id && txnIds.indexOf(id) === -1) txnIds.push(id);
+      });
+    });
+    let txns = [];
+    if(txnIds.length){
+      const { data: t } = await supabaseAdmin.from('transactions')
+        .select('id, item_name, payee, txn_date, amount, attachments').in('id', txnIds);
+      txns = t || [];
+    }
+
+    const total = lines.reduce(function(s,l){ return s + (Number(l.requested_amount)||0); }, 0);
+    const parts = [{
+      kind: 'html',
+      html: drawPackageCoverHtml({
+        companyName: company && company.name,
+        projectName: (project && (project.name || project.address)) || '',
+        drawNumber: draw.draw_number,
+        date: new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' }),
+        notes: draw.notes,
+        lines: lines,
+        total: total,
+      }),
+    }];
+
+    const { getSignedUrl } = require('../lib/storage');
+
+    for(const line of lines){
+      const ids = (Array.isArray(line.transaction_ids) ? line.transaction_ids : [])
+        .map(function(e){ return (e && e.id) ? e.id : e; });
+      const lineTxns = txns.filter(function(t){ return ids.indexOf(t.id) !== -1; });
+      const lineWaivers = (waivers||[]).filter(function(w){
+        const names = Array.isArray(w.line_item_names) ? w.line_item_names : [];
+        return names.indexOf(line.item_name) !== -1;
+      });
+
+      const receiptCount = lineTxns.reduce(function(s,t){
+        return s + ((Array.isArray(t.attachments) ? t.attachments.length : 0));
+      }, 0);
+      if(!receiptCount && !lineWaivers.length) continue;
+
+      parts.push({
+        kind: 'html',
+        html: drawPackageDividerHtml(line.item_name,
+          '$' + (Number(line.requested_amount)||0).toLocaleString('en-US', { minimumFractionDigits: 2 })
+          + '  ·  ' + receiptCount + ' receipt' + (receiptCount === 1 ? '' : 's')
+          + (lineWaivers.length ? '  ·  ' + lineWaivers.length + ' waiver' + (lineWaivers.length === 1 ? '' : 's') : '')),
+      });
+
+      for(const t of lineTxns){
+        for(const a of (Array.isArray(t.attachments) ? t.attachments : [])){
+          try {
+            const url = await getSignedUrl('files', a.path, 3600);
+            const isPdf = /pdf$/i.test(a.mime_type || '') || /\.pdf$/i.test(a.name || '');
+            parts.push({ kind: 'url', url: url, filename: a.name || 'receipt',
+                         convert: !isPdf });
+          } catch(e){ console.log('[Package] skipped receipt:', a.name, e.message); }
+        }
+      }
+
+      for(const w of lineWaivers){
+        if(!w.pdf_url) continue;
+        try {
+          const url = await getSignedUrl('files', w.pdf_url, 3600);
+          parts.push({ kind: 'url', url: url, filename: 'waiver.pdf', convert: false });
+        } catch(e){ console.log('[Package] skipped waiver:', w.id, e.message); }
+      }
+    }
+
+    if(parts.length === 1){
+      return res.status(400).json({ error: 'Nothing to package — no receipts or signed waivers on this draw' });
+    }
+
+    let pdfBuffer;
+    try {
+      pdfBuffer = await buildDrawPackage(parts);
+    } catch(e){
+      console.error('[Package] build failed:', e.message);
+      return res.status(500).json({ error: 'Could not build the package: ' + e.message });
+    }
+
+    const name = req.params.projectId + '/draw-packages/draw_' + draw.draw_number + '_' + Date.now() + '.pdf';
+    const stored = await uploadFile('files', name, pdfBuffer, 'application/pdf');
+
+    await supabaseAdmin.from('lender_draws')
+      .update({ package_url: stored, package_generated_at: new Date().toISOString() })
+      .eq('id', draw.id);
+
+    res.json({ success: true, parts: parts.length });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+lenderDrawRouter.get('/:id/package-url', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: d } = await supabaseAdmin.from('lender_draws')
+      .select('package_url').eq('id', req.params.id)
+      .eq('project_id', req.params.projectId).maybeSingle();
+    if(!d || !d.package_url) return res.status(404).json({ error: 'No package generated yet' });
+    const url = await resolveStorageUrl('files', d.package_url);
+    res.json({ url });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 lenderDrawRouter.delete('/:id', requireAuth, requireRole('owner','builder'),
                         requireProjectAccess, async (req, res) => {
   try {
