@@ -739,11 +739,35 @@ pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder',
 const lienRouter = require('express').Router({ mergeParams: true });
 lienRouter.get('/', requireAuth, async (req, res) => {
   try {
-    let q = supabaseAdmin.from('lien_waivers').select('*').eq('project_id', req.params.projectId);
+    let q = supabaseAdmin.from('lien_waivers')
+      // The contractor's signing modal shows who's paying and for what project,
+      // so carry those through rather than making the portal guess.
+      .select('*, projects(name, address, company_id)')
+      .eq('project_id', req.params.projectId);
     if(req.query.draw_id) q = q.eq('draw_id', req.query.draw_id);
     const { data, error } = await q.order('created_at', { ascending: false });
     if(error) return res.status(400).json({ error: error.message });
-    res.json(data);
+
+    // Flatten the project join and add the paying company's name.
+    let companyName = '';
+    try {
+      const cid = data && data.length && data[0].projects && data[0].projects.company_id;
+      if(cid){
+        const { data: co } = await supabaseAdmin.from('companies')
+          .select('name').eq('id', cid).maybeSingle();
+        companyName = (co && co.name) || '';
+      }
+    } catch(e){ /* non-fatal */ }
+
+    res.json((data||[]).map(function(w){
+      const proj = w.projects || {};
+      const out = Object.assign({}, w, {
+        project_name: proj.name || proj.address || '',
+        company_name: companyName,
+      });
+      delete out.projects;
+      return out;
+    }));
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 lienRouter.post('/', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
