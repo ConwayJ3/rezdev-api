@@ -750,12 +750,14 @@ lienRouter.get('/', requireAuth, async (req, res) => {
 
     // Flatten the project join and add the paying company's name.
     let companyName = '';
+    let companyLogo = '';
     try {
       const cid = data && data.length && data[0].projects && data[0].projects.company_id;
       if(cid){
         const { data: co } = await supabaseAdmin.from('companies')
-          .select('name').eq('id', cid).maybeSingle();
+          .select('name, logo_url').eq('id', cid).maybeSingle();
         companyName = (co && co.name) || '';
+        companyLogo = (co && co.logo_url) || '';
       }
     } catch(e){ /* non-fatal */ }
 
@@ -764,6 +766,7 @@ lienRouter.get('/', requireAuth, async (req, res) => {
       const out = Object.assign({}, w, {
         project_name: proj.name || proj.address || '',
         company_name: companyName,
+        company_logo: companyLogo,
       });
       delete out.projects;
       return out;
@@ -1575,6 +1578,9 @@ function drawPackageCoverHtml(opts){
     + 'td.r,th.r{text-align:right;}'
     + 'tr.total td{font-weight:700;border-top:2px solid #0C2340;border-bottom:none;padding-top:12px;}'
     + '</style></head><body>'
+    + (opts.logoUrl
+        ? '<img src="' + esc(opts.logoUrl) + '" alt="" style="max-height:70px;max-width:280px;object-fit:contain;margin-bottom:18px;"/>'
+        : '')
     + '<h1>' + esc(opts.companyName || 'Draw Request') + '</h1>'
     + '<div class="sub">Draw Request Package</div>'
     + '<table class="meta">'
@@ -1680,7 +1686,7 @@ lenderDrawRouter.post('/:id/package', requireAuth, requireRole('owner','builder'
     const { data: project } = await supabaseAdmin.from('projects')
       .select('*').eq('id', req.params.projectId).maybeSingle();
     const { data: company } = await supabaseAdmin.from('companies')
-      .select('name').eq('id', req.companyId).maybeSingle();
+      .select('name, logo_url').eq('id', req.companyId).maybeSingle();
     const { data: waivers } = await supabaseAdmin.from('lien_waivers')
       .select('*').eq('draw_id', draw.id).eq('status', 'signed');
 
@@ -1705,6 +1711,7 @@ lenderDrawRouter.post('/:id/package', requireAuth, requireRole('owner','builder'
       kind: 'html',
       html: drawPackageCoverHtml({
         companyName: company && company.name,
+        logoUrl: company && company.logo_url,
         projectName: (project && (project.name || project.address)) || '',
         drawNumber: draw.draw_number,
         date: new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' }),
