@@ -1578,11 +1578,12 @@ function drawPackageCoverHtml(opts){
     + 'td.r,th.r{text-align:right;}'
     + 'tr.total td{font-weight:700;border-top:2px solid #0C2340;border-bottom:none;padding-top:12px;}'
     + '</style></head><body>'
-    + (opts.logoUrl
-        ? '<img src="' + esc(opts.logoUrl) + '" alt="" style="max-height:70px;max-width:280px;object-fit:contain;margin-bottom:18px;"/>'
-        : '')
-    + '<h1>' + esc(opts.companyName || 'Draw Request') + '</h1>'
-    + '<div class="sub">Draw Request Package</div>'
+    + '<div style="text-align:center;margin-bottom:32px;">'
+    +   (opts.logoUrl
+        ? '<img src="' + esc(opts.logoUrl) + '" alt="" style="max-height:80px;max-width:320px;object-fit:contain;margin-bottom:14px;"/>'
+        : '<h1>' + esc(opts.companyName || 'Draw Request') + '</h1>')
+    +   '<div class="sub" style="margin-bottom:0;">Draw Request Package</div>'
+    + '</div>'
     + '<table class="meta">'
     +   '<tr><td class="k">Project</td><td>' + esc(opts.projectName) + '</td></tr>'
     +   '<tr><td class="k">Draw Number</td><td>Draw ' + esc(opts.drawNumber) + '</td></tr>'
