@@ -1226,25 +1226,58 @@ const lenderDrawRouter = require('express').Router({ mergeParams: true });
 // How much of each transaction has been FUNDED so far, across all draws.
 // A line's approved amount is apportioned pro rata over its transactions,
 // because the lender approves per line item, not per receipt.
+// How much each DRAW LINE has been funded, summed across payment events.
+// Falls back to the legacy approved_amount for draws funded before funding
+// events existed, so historic figures still calculate.
+async function lenderFundedByLine(drawIds){
+  const byLine = {};
+  if(!drawIds.length) return byLine;
+
+  const { data: lines } = await supabaseAdmin.from('lender_draw_lines')
+    .select('id, approved_amount').in('draw_id', drawIds);
+  const lineIds = (lines || []).map(function(l){ return l.id; });
+  if(!lineIds.length) return byLine;
+
+  const { data: fundingLines } = await supabaseAdmin.from('lender_draw_funding_lines')
+    .select('draw_line_id, amount').in('draw_line_id', lineIds);
+
+  let sawEvents = false;
+  (fundingLines || []).forEach(function(fl){
+    sawEvents = true;
+    byLine[fl.draw_line_id] = (byLine[fl.draw_line_id] || 0) + (Number(fl.amount) || 0);
+  });
+
+  // Legacy fallback: only for lines with no events of their own.
+  (lines || []).forEach(function(l){
+    if(byLine[l.id] === undefined && l.approved_amount != null){
+      byLine[l.id] = Number(l.approved_amount) || 0;
+    }
+  });
+
+  return byLine;
+}
+
+// How much of each TRANSACTION has been funded. A line's funded total is
+// apportioned pro rata over the transactions it covers, because the lender
+// funds per line, not per receipt.
 async function lenderFundedByTxn(projectId){
   const funded = {};
   const { data: draws } = await supabaseAdmin.from('lender_draws')
-    .select('id, status').eq('project_id', projectId);
+    .select('id').eq('project_id', projectId);
   const ids = (draws || []).map(function(d){ return d.id; });
   if(!ids.length) return funded;
 
   const { data: lines } = await supabaseAdmin.from('lender_draw_lines')
     .select('*').in('draw_id', ids);
+  const byLine = await lenderFundedByLine(ids);
 
   (lines || []).forEach(function(ln){
-    const approved = (ln.approved_amount === null || ln.approved_amount === undefined)
-      ? null : Number(ln.approved_amount);
-    if(approved === null || !approved) return;
+    const fundedAmt = Number(byLine[ln.id]) || 0;
+    if(!fundedAmt) return;
     const txnIds = Array.isArray(ln.transaction_ids) ? ln.transaction_ids : [];
     const requested = Number(ln.requested_amount) || 0;
     if(!txnIds.length || !requested) return;
-    const ratio = approved / requested;
-    // Each transaction in the line absorbs its share of what was approved.
+    const ratio = fundedAmt / requested;
     txnIds.forEach(function(entry){
       const tid = (entry && entry.id) ? entry.id : entry;
       const share = (entry && entry.amount != null) ? Number(entry.amount) : (requested / txnIds.length);
@@ -1300,9 +1333,15 @@ lenderDrawRouter.get('/', requireAuth, requireProjectAccess, async (req, res) =>
         .select('*').in('draw_id', ids);
       lines = l || [];
     }
+    // Funded-to-date per line, so the UI can show what's still short without
+    // re-deriving it from payment events itself.
+    const byLine = await lenderFundedByLine(ids);
     res.json((draws || []).map(function(d){
       return Object.assign({}, d, {
-        lines: lines.filter(function(x){ return x.draw_id === d.id; }),
+        lines: lines.filter(function(x){ return x.draw_id === d.id; })
+                    .map(function(l){
+                      return Object.assign({}, l, { funded_amount: Number(byLine[l.id]) || 0 });
+                    }),
       });
     }));
   } catch(e){ res.status(500).json({ error: e.message }); }
@@ -1400,34 +1439,81 @@ lenderDrawRouter.post('/:id/submit', requireAuth, requireRole('owner','builder',
 lenderDrawRouter.post('/:id/fund', requireAuth, requireRole('owner','builder','pm'),
                       requireProjectAccess, async (req, res) => {
   try {
-    const { lines, funded_at } = req.body;
-    if(!Array.isArray(lines)) return res.status(400).json({ error: 'lines required' });
+    const { lines, funded_at, notes } = req.body;
+    if(!Array.isArray(lines) || !lines.length){
+      return res.status(400).json({ error: 'At least one funded line is required' });
+    }
 
     const { data: draw } = await supabaseAdmin.from('lender_draws')
       .select('*').eq('id', req.params.id)
       .eq('project_id', req.params.projectId).maybeSingle();
     if(!draw) return res.status(404).json({ error: 'Draw not found' });
 
-    for(const ln of lines){
-      if(!ln.id) continue;
-      await supabaseAdmin.from('lender_draw_lines')
-        .update({ approved_amount: Number(ln.approved_amount) || 0,
-                  variance_note: ln.variance_note || null })
-        .eq('id', ln.id).eq('draw_id', draw.id);
-    }
+    // A payment is an EVENT. Recording another one later adds to the total
+    // rather than replacing it — which is what made correcting a cut so
+    // awkward before.
+    const paid = lines.filter(function(l){ return l.draw_line_id && Number(l.amount); });
+    if(!paid.length) return res.status(400).json({ error: 'No amounts entered' });
 
+    const { data: event, error: evErr } = await supabaseAdmin.from('lender_draw_fundings')
+      .insert({
+        draw_id: draw.id,
+        funded_at: funded_at || new Date().toISOString().slice(0,10),
+        notes: notes || null,
+        created_by: req.userId,
+      }).select().single();
+    if(evErr) return res.status(400).json({ error: evErr.message });
+
+    const rows = paid.map(function(l){
+      return {
+        funding_id: event.id,
+        draw_line_id: l.draw_line_id,
+        amount: Number(l.amount) || 0,
+        variance_note: l.variance_note || null,
+      };
+    });
+    const { error: flErr } = await supabaseAdmin.from('lender_draw_funding_lines').insert(rows);
+    if(flErr) return res.status(400).json({ error: flErr.message });
+
+    // Recompute the draw's status from everything funded to date.
     const { data: allLines } = await supabaseAdmin.from('lender_draw_lines')
-      .select('requested_amount, approved_amount').eq('draw_id', draw.id);
+      .select('id, requested_amount').eq('draw_id', draw.id);
+    const byLine = await lenderFundedByLine([draw.id]);
     const requested = (allLines||[]).reduce(function(s,l){ return s + (Number(l.requested_amount)||0); }, 0);
-    const approved  = (allLines||[]).reduce(function(s,l){ return s + (Number(l.approved_amount)||0); }, 0);
-    const status = (approved + 0.01 >= requested) ? 'funded' : 'partially_funded';
+    const fundedTotal = (allLines||[]).reduce(function(s,l){ return s + (Number(byLine[l.id])||0); }, 0);
+    const status = (fundedTotal + 0.01 >= requested) ? 'funded' : 'partially_funded';
 
     const { data: out, error } = await supabaseAdmin.from('lender_draws')
-      .update({ status, funded_at: funded_at || new Date().toISOString() })
+      .update({ status: status, funded_at: event.funded_at })
       .eq('id', draw.id).select().single();
     if(error) return res.status(400).json({ error: error.message });
 
-    res.json(Object.assign({}, out, { requested_total: requested, approved_total: approved }));
+    res.json(Object.assign({}, out, {
+      requested_total: requested,
+      funded_total: fundedTotal,
+      shortfall: Math.max(0, requested - fundedTotal),
+    }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// Payment history for a draw — every event and how it split across lines.
+lenderDrawRouter.get('/:id/fundings', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    const { data: events } = await supabaseAdmin.from('lender_draw_fundings')
+      .select('*').eq('draw_id', req.params.id)
+      .order('funded_at', { ascending: true });
+    const ids = (events || []).map(function(e){ return e.id; });
+    let lines = [];
+    if(ids.length){
+      const { data: l } = await supabaseAdmin.from('lender_draw_funding_lines')
+        .select('*').in('funding_id', ids);
+      lines = l || [];
+    }
+    res.json((events || []).map(function(e){
+      return Object.assign({}, e, {
+        lines: lines.filter(function(l){ return l.funding_id === e.id; }),
+      });
+    }));
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
