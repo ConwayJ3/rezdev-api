@@ -1296,6 +1296,27 @@ lenderDrawRouter.get('/available', requireAuth, requireProjectAccess, async (req
       .order('txn_date', { ascending: true });
 
     const funded = await lenderFundedByTxn(req.params.projectId);
+
+    // A cost sitting on a submitted-but-unfunded draw is already spoken for.
+    // Without this it reappears as available and gets requested twice.
+    const claimed = {};
+    try {
+      const { data: openDraws } = await supabaseAdmin.from('lender_draws')
+        .select('id, status').eq('project_id', req.params.projectId)
+        .neq('status', 'funded');
+      const openIds = (openDraws || []).map(function(d){ return d.id; });
+      if(openIds.length){
+        const { data: openLines } = await supabaseAdmin.from('lender_draw_lines')
+          .select('transaction_ids').in('draw_id', openIds);
+        (openLines || []).forEach(function(l){
+          (Array.isArray(l.transaction_ids) ? l.transaction_ids : []).forEach(function(e){
+            const id = (e && e.id) ? e.id : e;
+            if(id) claimed[id] = true;
+          });
+        });
+      }
+    } catch(e){ console.log('[Draws] claimed-check failed:', e.message); }
+
     const groups = {};
 
     (txns || []).forEach(function(t){
@@ -1303,6 +1324,7 @@ lenderDrawRouter.get('/available', requireAuth, requireProjectAccess, async (req
       const already = funded[t.id] || 0;
       const outstanding = Math.round((amount - already) * 100) / 100;
       if(outstanding <= 0.01) return;   // funded in full
+      if(claimed[t.id]) return;         // already on an open draw
 
       const key = t.item_name || '(no item)';
       if(!groups[key]) groups[key] = { item_name: key, section_id: t.section_id,
