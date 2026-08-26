@@ -7,6 +7,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 const { uploadFile, deleteFile } = require('../lib/storage');
 
 // GET /projects/:projectId/budget — full budget snapshot
+// Budget data is the builder's own financial picture — costs, fee schedule,
+// investor terms. Project access is not a reason to see it, so every READ
+// here is restricted the same way the writes already are. (Writes were
+// already owner/builder/pm; the reads were open to anyone on the project.)
+router.use(requireAuth, requireRole('owner','builder','pm'));
+
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
   const pid = req.params.projectId;
 
