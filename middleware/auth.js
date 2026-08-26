@@ -199,22 +199,36 @@ async function requireProjectAccess(req, res, next) {
       return next();
     }
 
-    // Contractors — check trade_assignments or contracts
+    // Contractors — assignments live in project_contractors, keyed by USER.
+    // This previously checked trade_assignments, which nothing writes to, so
+    // contractors were locked out of every project-scoped route.
     if(role === 'contractor') {
-      const { data: contractor } = await supabaseAdmin
+      const { data: assigned } = await supabaseAdmin
+        .from('project_contractors')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('user_id', req.userId)
+        .limit(1);
+      if(assigned && assigned.length) return next();
+
+      // Fallback: a contractor named on a contract for this project.
+      // .limit(1) rather than .single() — a duplicate directory row must not
+      // break access entirely.
+      const { data: contractors } = await supabaseAdmin
         .from('contractors')
         .select('id')
-        .eq('user_id', req.userId)
-        .single();
-      if(contractor) {
-        const { data } = await supabaseAdmin
-          .from('trade_assignments')
+        .eq('user_id', req.userId);
+      const ids = (contractors || []).map(function(c){ return c.id; });
+      if(ids.length){
+        const { data: ctr } = await supabaseAdmin
+          .from('contracts')
           .select('id')
           .eq('project_id', projectId)
-          .eq('contractor_id', contractor.id)
-          .single();
-        if(data) return next();
+          .in('contractor_id', ids)
+          .limit(1);
+        if(ctr && ctr.length) return next();
       }
+
       return res.status(403).json({ error: 'You do not have access to this project' });
     }
 
