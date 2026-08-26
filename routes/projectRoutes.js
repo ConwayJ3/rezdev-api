@@ -1301,9 +1301,13 @@ lenderDrawRouter.get('/available', requireAuth, requireProjectAccess, async (req
     // Without this it reappears as available and gets requested twice.
     const claimed = {};
     try {
+      // Only DRAFT and SUBMITTED draws lock their costs — those are still
+      // awaiting a decision, so re-requesting them would double-claim.
+      // Once a lender has partially funded, they've ruled: whatever they cut
+      // is genuinely available again and gets carried to a later draw.
       const { data: openDraws } = await supabaseAdmin.from('lender_draws')
         .select('id, status').eq('project_id', req.params.projectId)
-        .neq('status', 'funded');
+        .in('status', ['draft', 'submitted']);
       const openIds = (openDraws || []).map(function(d){ return d.id; });
       if(openIds.length){
         const { data: openLines } = await supabaseAdmin.from('lender_draw_lines')
