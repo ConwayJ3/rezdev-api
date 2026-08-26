@@ -105,7 +105,18 @@ selRouter.post('/:itemName/links', requireAuth, requireRole('owner','builder'), 
 const ctrRouter = express.Router({ mergeParams: true });
 
 ctrRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
-  const { data, error } = await req.db.from('contracts').select('*').eq('project_id', req.params.projectId).order('created_at', { ascending: false });
+  let q = req.db.from('contracts').select('*').eq('project_id', req.params.projectId);
+
+  // Project access is not document access. A contractor or client on this
+  // project should see the contracts addressed to THEM — not every contract
+  // on the job, which would expose the other parties' terms.
+  if(!['owner','builder','pm'].includes(req.userRole)){
+    const email = ((req.user && req.user.email) || '').toLowerCase();
+    if(!email) return res.json([]);
+    q = q.ilike('recipient_email', email);
+  }
+
+  const { data, error } = await q.order('created_at', { ascending: false });
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
