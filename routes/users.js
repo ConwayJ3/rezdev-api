@@ -2,6 +2,8 @@ const express = require('express');
 const router  = express.Router();
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const multer = require('multer');
+const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 } });
 
 // GET /users — all users in company
 router.get('/', requireAuth, requireRole('owner','builder'), async (req, res) => {
@@ -217,6 +219,72 @@ router.get('/companies/me', requireAuth, async (req, res) => {
 });
 
 // PUT /companies/:id
+// Company logo. A separate multipart route because PUT /companies/:id takes
+// JSON only.
+router.post('/companies/:id/logo', requireAuth, logoUpload.single('file'), async (req, res) => {
+  try {
+    if(!req.user || !['owner','builder'].includes(req.userRole)){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if(req.params.id !== req.companyId){
+      return res.status(403).json({ error: 'Not your company' });
+    }
+    if(!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const ok = ['image/png','image/jpeg','image/webp','image/svg+xml'];
+    if(ok.indexOf(req.file.mimetype) === -1){
+      return res.status(400).json({ error: 'Logo must be a PNG, JPG, WEBP or SVG' });
+    }
+
+    const { uploadFile, getPublicUrl } = require('../lib/storage');
+    const ext = (req.file.originalname || '').split('.').pop().toLowerCase() || 'png';
+    // Company id in the path so two builders can't collide on the same filename.
+    const path = req.params.id + '/logo_' + Date.now() + '.' + ext;
+
+    let stored;
+    try {
+      stored = await uploadFile('companyLogos', path, req.file.buffer, req.file.mimetype);
+    } catch(e){
+      console.error('[Company] logo upload failed:', e && (e.message||e));
+      return res.status(500).json({ error: 'Upload failed' });
+    }
+
+    let url = null;
+    try {
+      url = getPublicUrl('companyLogos', stored);
+    } catch(e){ /* fall through */ }
+    if(!url){
+      const { supabaseAdmin: sa } = require('../lib/supabase');
+      const { data } = sa.storage.from('company-logos').getPublicUrl(stored);
+      url = data && data.publicUrl;
+    }
+    if(!url) return res.status(500).json({ error: 'Could not resolve the logo URL' });
+
+    const { data, error } = await supabaseAdmin.from('companies')
+      .update({ logo_url: url, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+
+    res.json({ success: true, logo_url: url, company: data });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/companies/:id/logo', requireAuth, async (req, res) => {
+  try {
+    if(!req.user || !['owner','builder'].includes(req.userRole)){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if(req.params.id !== req.companyId){
+      return res.status(403).json({ error: 'Not your company' });
+    }
+    const { error } = await supabaseAdmin.from('companies')
+      .update({ logo_url: null, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 router.put('/companies/:id', requireAuth, async (req, res) => {
   if(!req.user || !['owner','builder'].includes(req.userRole)){
     return res.status(403).json({ error: 'Not authorized' });
