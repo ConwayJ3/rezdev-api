@@ -1000,6 +1000,66 @@ tmplRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), asyn
 });
 
 // PUBLIC endpoint — no auth required — lookup RFP by token
+// A contractor's own RFPs, across every project. Not project-scoped, because
+// an RFP reaches people who are NOT yet on the project.
+const myRfpRouter = require('express').Router();
+
+myRfpRouter.get('/mine', requireAuth, async (req, res) => {
+  try {
+    const email = ((req.user && req.user.email) || '').toLowerCase();
+    if(!email) return res.json([]);
+
+    // Bids first — the address someone bids from isn't always the one the
+    // invitation went to.
+    const { data: bids } = await supabaseAdmin.from('rfp_bids')
+      .select('*').ilike('email', email);
+    const bidRfpIds = [...new Set((bids || []).map(function(b){ return b.rfp_id; }).filter(Boolean))];
+
+    // Invitations: external_emails is jsonb, so the match happens in JS. Scope
+    // the QUERY to RFPs this contractor could legitimately be part of first —
+    // relying on the JS filter alone would put every company's RFPs one bug
+    // away from being visible.
+    const { data: myContractors } = await supabaseAdmin.from('contractors')
+      .select('company_id').eq('user_id', req.userId);
+    const companyIds = [...new Set((myContractors || [])
+      .map(function(c){ return c.company_id; }).filter(Boolean))];
+    if(req.companyId && companyIds.indexOf(req.companyId) === -1) companyIds.push(req.companyId);
+    if(!companyIds.length) return res.json([]);
+
+    const { data: companyProjects } = await supabaseAdmin.from('projects')
+      .select('id').in('company_id', companyIds);
+    const projectIds = (companyProjects || []).map(function(p){ return p.id; });
+    if(!projectIds.length) return res.json([]);
+
+    const { data: allRfps } = await supabaseAdmin.from('rfps')
+      .select('*, projects(name, address)')
+      .in('project_id', projectIds)
+      .order('created_at', { ascending: false });
+
+    const mine = (allRfps || []).filter(function(r){
+      if(bidRfpIds.indexOf(r.id) !== -1) return true;
+      const invited = Array.isArray(r.external_emails) ? r.external_emails : [];
+      return invited.some(function(e){ return String(e || '').toLowerCase() === email; });
+    });
+
+    res.json(mine.map(function(r){
+      const proj = r.projects || {};
+      const myBid = (bids || []).find(function(b){ return b.rfp_id === r.id; }) || null;
+      const out = Object.assign({}, r, {
+        project_name: proj.name || proj.address || '',
+        my_bid: myBid ? {
+          id: myBid.id,
+          status: myBid.status,
+          amount: myBid.amount,
+          submitted_at: myBid.created_at,
+        } : null,
+      });
+      delete out.projects;
+      return out;
+    }));
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 const publicRfpRouter = require('express').Router();
 publicRfpRouter.get('/:token', async (req, res) => {
   try {
@@ -1933,4 +1993,4 @@ closingRouter.delete('/:id', requireAuth, requireRole('owner','builder','pm'), a
   res.json({ success: true });
 });
 
-module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter, pFileRouter, lenderDrawRouter };
+module.exports = { coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter, pFileRouter, lenderDrawRouter, myRfpRouter };

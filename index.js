@@ -18,7 +18,7 @@ const fileRoutes        = require('./routes/files');
 const contractorRoutes  = require('./routes/contractors');
 const userRoutes        = require('./routes/users');
 const {
-  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lenderDrawRouter, pFileRouter, lienRouter, publicRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
+  coRouter, selRouter, ctrRouter, payRouter, wrnRouter, qcRouter, rfpRouter, pContractorRouter, lenderDrawRouter, pFileRouter, lienRouter, publicRfpRouter, myRfpRouter, tmplRouter, gcDrawRouter, inspRouter, invRouter, delayRouter, closingRouter
 } = require('./routes/projectRoutes');
 
 const app = express();
@@ -94,6 +94,7 @@ app.use('/projects/:projectId/files',          fileRoutes);
 app.use('/projects/:projectId/change-orders',  coRouter);
 app.use('/projects/:projectId/contractors',    pContractorRouter);
 app.use('/projects/:projectId/lien-waivers',  lienRouter);
+app.use('/rfps',                              myRfpRouter);
 app.use('/rfp',                               publicRfpRouter);
 app.use('/pm-templates',                      tmplRouter);
 app.use('/integrations/quickbooks',           require('./routes/quickbooks'));
