@@ -2,6 +2,8 @@ const express = require('express');
 const router  = express.Router();
 const { supabaseAdmin } = require('../lib/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const multer = require('multer');
+const docUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 // GET /contractors
 router.get('/', requireAuth, async (req, res) => {
@@ -94,6 +96,167 @@ router.post('/:id/invite', requireAuth, requireRole('owner','builder'), async (r
     }
 
     res.json({ success: true, user_id: userId });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+const DOC_TYPES = ['coi', 'w9'];
+
+// Compliance is a fact about documents, not a default. Current means a W-9
+// on file AND a COI on file that hasn't expired.
+function complianceFromDocs(docs){
+  const list = docs || [];
+  const w9 = list.find(function(d){ return d.doc_type === 'w9'; });
+  const coi = list.find(function(d){ return d.doc_type === 'coi'; });
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  let coiState = 'missing';
+  let coiExpires = null;
+  if(coi){
+    coiExpires = coi.expires_on || null;
+    if(!coiExpires) coiState = 'no_date';
+    else {
+      const exp = new Date(coiExpires + 'T12:00');
+      const days = Math.round((exp - today) / 86400000);
+      coiState = days < 0 ? 'expired' : (days <= 30 ? 'expiring' : 'current');
+    }
+  }
+
+  const w9State = w9 ? 'current' : 'missing';
+  const ok = (w9State === 'current') &&
+             (coiState === 'current' || coiState === 'expiring');
+
+  return { status: ok ? (coiState === 'expiring' ? 'expiring' : 'current') : 'action_required',
+           coi: coiState, coi_expires_on: coiExpires, w9: w9State };
+}
+
+// Compliance across every contractor — powers the directory column.
+router.get('/compliance', requireAuth, async (req, res) => {
+  try {
+    const { data: contractors } = await supabaseAdmin.from('contractors')
+      .select('id').eq('company_id', req.companyId);
+    const ids = (contractors || []).map(function(c){ return c.id; });
+    if(!ids.length) return res.json({});
+
+    const { data: docs } = await supabaseAdmin.from('contractor_documents')
+      .select('contractor_id, doc_type, expires_on, uploaded_at').in('contractor_id', ids);
+
+    const out = {};
+    ids.forEach(function(id){
+      out[id] = complianceFromDocs((docs || []).filter(function(d){ return d.contractor_id === id; }));
+    });
+    res.json(out);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+// A contractor may see their own documents; a builder any in their company.
+async function canTouchContractor(req, contractorId){
+  const { data: c } = await supabaseAdmin.from('contractors')
+    .select('id, company_id, user_id').eq('id', contractorId).maybeSingle();
+  if(!c) return null;
+  if(['owner','builder','pm'].includes(req.userRole) && c.company_id === req.companyId) return c;
+  if(c.user_id && c.user_id === req.userId) return c;
+  return null;
+}
+
+router.get('/:id/documents', requireAuth, async (req, res) => {
+  try {
+    const c = await canTouchContractor(req, req.params.id);
+    if(!c) return res.status(403).json({ error: 'Not authorized' });
+    const { data, error } = await supabaseAdmin.from('contractor_documents')
+      .select('*').eq('contractor_id', c.id).order('uploaded_at', { ascending: false });
+    if(error) return res.status(400).json({ error: error.message });
+    res.json({ documents: data || [], compliance: complianceFromDocs(data) });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.post('/:id/documents', requireAuth, docUpload.single('file'), async (req, res) => {
+  try {
+    const c = await canTouchContractor(req, req.params.id);
+    if(!c) return res.status(403).json({ error: 'Not authorized' });
+    if(!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const docType = (req.body.doc_type || '').toLowerCase();
+    if(DOC_TYPES.indexOf(docType) === -1){
+      return res.status(400).json({ error: 'doc_type must be coi or w9' });
+    }
+    const ok = ['application/pdf','image/jpeg','image/png','image/heic'];
+    if(ok.indexOf(req.file.mimetype) === -1){
+      return res.status(400).json({ error: 'Upload a PDF or an image' });
+    }
+    // Only a COI expires. A W-9 doesn't lapse, so asking for a date there
+    // would be asking for something meaningless.
+    const expiresOn = (docType === 'coi' && req.body.expires_on) ? req.body.expires_on : null;
+    if(docType === 'coi' && !expiresOn){
+      return res.status(400).json({ error: 'An expiry date is required for a certificate of insurance' });
+    }
+
+    const { uploadFile } = require('../lib/storage');
+    const safe = (req.file.originalname || docType).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = c.company_id + '/contractors/' + c.id + '/' + docType + '_' + Date.now() + '_' + safe;
+
+    let stored;
+    try {
+      stored = await uploadFile('files', path, req.file.buffer, req.file.mimetype);
+    } catch(e){
+      console.error('[Docs] upload failed:', e && (e.message||e));
+      return res.status(500).json({ error: 'Upload failed' });
+    }
+
+    // One current document per type — a new upload replaces the old.
+    const { data: existing } = await supabaseAdmin.from('contractor_documents')
+      .select('id, file_path').eq('contractor_id', c.id).eq('doc_type', docType);
+    for(const old of (existing || [])){
+      try {
+        const { deleteFile } = require('../lib/storage');
+        if(old.file_path) await deleteFile('files', old.file_path);
+      } catch(e){ /* stranded file beats a failed replace */ }
+      await supabaseAdmin.from('contractor_documents').delete().eq('id', old.id);
+    }
+
+    const { data, error } = await supabaseAdmin.from('contractor_documents')
+      .insert({
+        contractor_id: c.id,
+        company_id: c.company_id,
+        doc_type: docType,
+        file_name: req.file.originalname,
+        file_path: stored,
+        expires_on: expiresOn,
+        uploaded_by: req.userId,
+      }).select().single();
+    if(error) return res.status(400).json({ error: error.message });
+
+    const { data: all } = await supabaseAdmin.from('contractor_documents')
+      .select('*').eq('contractor_id', c.id);
+    res.status(201).json({ document: data, compliance: complianceFromDocs(all) });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.get('/:id/documents/:docId/url', requireAuth, async (req, res) => {
+  try {
+    const c = await canTouchContractor(req, req.params.id);
+    if(!c) return res.status(403).json({ error: 'Not authorized' });
+    const { data: doc } = await supabaseAdmin.from('contractor_documents')
+      .select('file_path').eq('id', req.params.docId).eq('contractor_id', c.id).maybeSingle();
+    if(!doc) return res.status(404).json({ error: 'Document not found' });
+    const { resolveStorageUrl } = require('../lib/storage');
+    const url = await resolveStorageUrl('files', doc.file_path);
+    res.json({ url });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/:id/documents/:docId', requireAuth, async (req, res) => {
+  try {
+    const c = await canTouchContractor(req, req.params.id);
+    if(!c) return res.status(403).json({ error: 'Not authorized' });
+    const { data: doc } = await supabaseAdmin.from('contractor_documents')
+      .select('id, file_path').eq('id', req.params.docId).eq('contractor_id', c.id).maybeSingle();
+    if(!doc) return res.status(404).json({ error: 'Document not found' });
+    try {
+      const { deleteFile } = require('../lib/storage');
+      if(doc.file_path) await deleteFile('files', doc.file_path);
+    } catch(e){ console.log('[Docs] cleanup failed:', e.message); }
+    await supabaseAdmin.from('contractor_documents').delete().eq('id', doc.id);
+    res.json({ ok: true });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
