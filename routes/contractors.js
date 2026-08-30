@@ -14,7 +14,23 @@ router.get('/', requireAuth, async (req, res) => {
     .order('company_name');
 
   if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+
+  // A contractors row gets user_id as soon as an invite is SENT, so that
+  // alone can't tell you whether they've actually activated. users.status
+  // stays 'pending' until they set a password.
+  const userIds = (data || []).map(function(c){ return c.user_id; }).filter(Boolean);
+  let statusByUser = {};
+  if(userIds.length){
+    const { data: us } = await supabaseAdmin.from('users')
+      .select('id, status').in('id', userIds);
+    (us || []).forEach(function(u){ statusByUser[u.id] = u.status; });
+  }
+
+  res.json((data || []).map(function(c){
+    return Object.assign({}, c, {
+      portal_status: c.user_id ? (statusByUser[c.user_id] || 'pending') : null,
+    });
+  }));
 });
 
 // POST /contractors/:id/invite — give a directory contractor portal access.
