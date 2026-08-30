@@ -130,6 +130,22 @@ function complianceFromDocs(docs){
 }
 
 // Compliance across every contractor — powers the directory column.
+// The logged-in contractor's own record. The portal knows the USER but not
+// their contractors row, which document uploads are keyed to.
+router.get('/me', requireAuth, async (req, res) => {
+  try {
+    const { data } = await supabaseAdmin.from('contractors')
+      .select('*').eq('user_id', req.userId).limit(1);
+    const me = (data && data[0]) || null;
+    if(!me) return res.status(404).json({ error: 'No contractor record for this account' });
+
+    const { data: docs } = await supabaseAdmin.from('contractor_documents')
+      .select('*').eq('contractor_id', me.id).order('uploaded_at', { ascending: false });
+
+    res.json({ contractor: me, documents: docs || [], compliance: complianceFromDocs(docs) });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 router.get('/compliance', requireAuth, async (req, res) => {
   try {
     const { data: contractors } = await supabaseAdmin.from('contractors')
