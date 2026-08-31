@@ -489,7 +489,7 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
     if(!bid_id) return res.status(400).json({ error: 'bid_id required' });
 
     const { data: rfp } = await supabaseAdmin.from('rfps')
-      .select('id, title, company_id, project_id')
+      .select('id, title, company_id, project_id, trades')
       .eq('id', req.params.id).eq('company_id', req.companyId).maybeSingle();
     if(!rfp) return res.status(404).json({ error: 'RFP not found' });
 
@@ -603,9 +603,23 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
     let assigned = false;
     try {
       if(awardedUserId && rfp.project_id){
+        // The bidder's own trade wording ("Framing") won't necessarily match
+        // the project's trade slots ("Framer"), and the team dropdown matches
+        // exactly — so an assigned contractor looked unassigned. Prefer the
+        // RFP's own trade, then a loose match, then whatever they said.
+        const bidTrade = (Array.isArray(winner.trades) && winner.trades[0]) || null;
+        const rfpTrades = Array.isArray(rfp.trades) ? rfp.trades : [];
+        let trade = rfpTrades[0] || bidTrade;
+        if(bidTrade && rfpTrades.length){
+          const b = bidTrade.toLowerCase().slice(0, 5);
+          const hit = rfpTrades.find(function(t){
+            return String(t || '').toLowerCase().slice(0, 5) === b;
+          });
+          if(hit) trade = hit;
+        }
+
         const { error: aErr } = await supabaseAdmin.from('project_contractors')
-          .upsert({ project_id: rfp.project_id, user_id: awardedUserId,
-                    trade: (Array.isArray(winner.trades) && winner.trades[0]) || null },
+          .upsert({ project_id: rfp.project_id, user_id: awardedUserId, trade: trade },
                   { onConflict: 'project_id,user_id' });
         if(aErr) console.log('[RFP] project assignment failed:', aErr.message);
         else assigned = true;
