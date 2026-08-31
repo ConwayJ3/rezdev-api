@@ -523,12 +523,28 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
 
     // 3. Portal account for the winner. Only now — bidding needs no account.
     let setupUrl = null;
+    let awardedUserId = null;
     try {
       if(winner.email){
         const emailNorm = String(winner.email).trim().toLowerCase();
-        const { data: contractor } = await supabaseAdmin.from('contractors')
+        let { data: contractor } = await supabaseAdmin.from('contractors')
           .select('id, user_id').eq('company_id', rfp.company_id)
           .ilike('email', emailNorm).maybeSingle();
+
+        // Bid submission normally creates this row. If it's somehow absent,
+        // create it here — the previous code skipped the entire account step
+        // silently, so the winner heard nothing at all.
+        if(!contractor){
+          const { data: made } = await supabaseAdmin.from('contractors').insert({
+            company_id: rfp.company_id,
+            company_name: winner.company_name || winner.contractor_name || 'Contractor',
+            contact_name: winner.contractor_name || '',
+            email: emailNorm,
+            phone: winner.phone || null,
+            status: 'active',
+          }).select('id, user_id').single();
+          contractor = made || null;
+        }
 
         if(contractor && !contractor.user_id){
           const first = (winner.contractor_name || 'Contractor').split(' ')[0];
@@ -563,6 +579,7 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
 
             await supabaseAdmin.from('contractors')
               .update({ user_id: userId, status: 'active' }).eq('id', contractor.id);
+            awardedUserId = userId;
 
             const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
             const { data: linkData } = await supabaseAdmin.auth.admin.generateLink({
@@ -575,11 +592,27 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
         } else if(contractor && contractor.user_id){
           await supabaseAdmin.from('contractors')
             .update({ status: 'active' }).eq('id', contractor.id);
+          awardedUserId = contractor.user_id;
         }
       }
     } catch(e){ console.log('[RFP] winner account step failed:', e.message); }
 
-    // 4. Emails — never let a failure undo the award
+    // 4. On the project. Winning the work should put you on the job — without
+    // this the contractor logs in to a portal with no projects, and the
+    // dashboard hides everything else behind that.
+    let assigned = false;
+    try {
+      if(awardedUserId && rfp.project_id){
+        const { error: aErr } = await supabaseAdmin.from('project_contractors')
+          .upsert({ project_id: rfp.project_id, user_id: awardedUserId,
+                    trade: (Array.isArray(winner.trades) && winner.trades[0]) || null },
+                  { onConflict: 'project_id,user_id' });
+        if(aErr) console.log('[RFP] project assignment failed:', aErr.message);
+        else assigned = true;
+      }
+    } catch(e){ console.log('[RFP] project assignment step failed:', e.message); }
+
+    // 5. Emails — never let a failure undo the award
     try {
       await sendBidAwarded({
         to: winner.email, contractorName: winner.contractor_name,
@@ -599,7 +632,8 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
     }
 
     res.json({ success: true, awarded_to: winner.contractor_name,
-               declined_count: Math.max(0, all.length - 1), portal_invited: !!setupUrl });
+               declined_count: Math.max(0, all.length - 1),
+               portal_invited: !!setupUrl, assigned_to_project: assigned });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
