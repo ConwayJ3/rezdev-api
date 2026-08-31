@@ -435,7 +435,23 @@ rfpRouter.post('/', requireAuth, requireRole('owner','builder'), async (req, res
   // never lose the RFP that was just created.
   let invitedCount = 0;
   try {
-    const emails = Array.isArray(external_emails) ? external_emails : [];
+    const emails = (Array.isArray(external_emails) ? external_emails : []).slice();
+
+    // Contractors picked from the DIRECTORY arrive as ids in sent_to. Nothing
+    // resolved them to addresses, so choosing someone you already work with
+    // sent no invitation at all.
+    try {
+      const ids = Array.isArray(sent_to) ? sent_to : [];
+      if(ids.length){
+        const { data: picked } = await supabaseAdmin.from('contractors')
+          .select('email').in('id', ids);
+        (picked || []).forEach(function(c){
+          const addr = String(c.email || '').trim();
+          if(addr && emails.indexOf(addr) === -1) emails.push(addr);
+        });
+      }
+    } catch(e){ console.log('[RFP] could not resolve directory contractors:', e.message); }
+
     if(emails.length && data && data.public_token){
       const appUrl = process.env.FRONTEND_URL || 'https://www.rezdevos.com';
       const bidUrl = appUrl + '/rfp-landing.html?token=' + data.public_token;
@@ -1036,10 +1052,25 @@ myRfpRouter.get('/mine', requireAuth, async (req, res) => {
       .in('project_id', projectIds)
       .order('created_at', { ascending: false });
 
+    // Every contractors row for this user — duplicates exist, and an RFP may
+    // reference either one.
+    const { data: myRows } = await supabaseAdmin.from('contractors')
+      .select('id, email').eq('user_id', req.userId);
+    const myIds = (myRows || []).map(function(c){ return c.id; });
+    const myEmails = [email].concat((myRows || [])
+      .map(function(c){ return String(c.email || '').toLowerCase(); })).filter(Boolean);
+
     const mine = (allRfps || []).filter(function(r){
       if(bidRfpIds.indexOf(r.id) !== -1) return true;
+
+      // Typed in as an external contractor
       const invited = Array.isArray(r.external_emails) ? r.external_emails : [];
-      return invited.some(function(e){ return String(e || '').toLowerCase() === email; });
+      if(invited.some(function(e){ return myEmails.indexOf(String(e||'').toLowerCase()) !== -1; })) return true;
+
+      // Picked from the directory — sent_to holds contractor ids, and this
+      // path previously reached nobody: no email, and nothing in the portal.
+      const sent = Array.isArray(r.sent_to) ? r.sent_to : [];
+      return sent.some(function(id){ return myIds.indexOf(id) !== -1; });
     });
 
     res.json(mine.map(function(r){
