@@ -297,8 +297,15 @@ router.post('/webhook', async (req, res) => {
       } catch(e){ console.log('[SignWell] completed pdf fetch failed:', e.message); }
       await supabaseAdmin.from('contracts').update({
         status: 'signed', signed_at: new Date().toISOString(),
-        ...(signedUrl ? { signed_pdf_url: signedUrl } : {}),
+        // Deliberately NOT storing signedUrl here: it's a signwell.com link,
+        // which can't be embedded and isn't ours. The retry below fetches the
+        // binary and stores it in our bucket instead.
       }).eq('signwell_document_id', docId);
+
+      // Background — the webhook must answer immediately or SignWell retries.
+      fetchCompletedPdfWithRetry(docId).catch(function(e){
+        console.log('[SignWell] completed pdf retry chain failed:', e.message);
+      });
     } else if(type === 'document_viewed'){
       await supabaseAdmin.from('contracts').update({ status: 'viewed', viewed_at: new Date().toISOString() }).eq('signwell_document_id', docId).eq('status','sent');
     } else if(type === 'document_declined'){
@@ -989,6 +996,54 @@ router.delete('/contracts/:id', requireAuth, requireRole('owner','builder','pm')
     res.json({ success: true });
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
+
+// SignWell's completed PDF is NOT ready when document_completed fires — the
+// webhook logs show completed_pdf_url as null every time. It shows up a
+// minute or two later. Retry in the background rather than leaving the client
+// looking at an unsigned document until the builder opens it.
+async function fetchCompletedPdfWithRetry(docId, delaysMs){
+  const delays = delaysMs || [15000, 45000, 90000, 180000];
+
+  for(let i = 0; i < delays.length; i++){
+    await new Promise(function(r){ setTimeout(r, delays[i]); });
+    try {
+      const { data: contract } = await supabaseAdmin.from('contracts')
+        .select('id, project_id, company_id, signed_pdf_url')
+        .eq('signwell_document_id', docId).maybeSingle();
+      if(!contract) return;
+
+      // Someone opened it in the meantime and the lazy path already stored it.
+      if(contract.signed_pdf_url && !/signwell\.com/i.test(contract.signed_pdf_url)) return;
+
+      const r = await fetch(`${SIGNWELL_API}/documents/${docId}/completed_pdf`, {
+        headers: { 'X-Api-Key': SW_KEY },
+      });
+      if(!r.ok){
+        console.log('[SignWell] completed_pdf not ready yet (attempt ' + (i+1) + '):', r.status);
+        continue;
+      }
+      const pdfBuffer = Buffer.from(await r.arrayBuffer());
+      if(!pdfBuffer.length){
+        console.log('[SignWell] completed_pdf empty (attempt ' + (i+1) + ')');
+        continue;
+      }
+
+      const { uploadFile } = require('../lib/storage');
+      const fileName = (contract.company_id || 'company') + '/signed/' + contract.id + '_signed.pdf';
+      const storagePath = await uploadFile('contracts', fileName, pdfBuffer, 'application/pdf');
+
+      // Store the PATH — signed on read, same as everywhere else.
+      await supabaseAdmin.from('contracts')
+        .update({ signed_pdf_url: storagePath }).eq('id', contract.id);
+      console.log('[SignWell] stored completed PDF for', contract.id, 'on attempt', i+1);
+      return;
+    } catch(e){
+      console.log('[SignWell] completed_pdf retry ' + (i+1) + ' failed:', e.message);
+    }
+  }
+  console.log('[SignWell] gave up fetching completed PDF for', docId,
+              '— it will be fetched when someone opens the contract');
+}
 
 // GET /signwell/signed-pdf/:contractId — fetch (and cache) the completed PDF URL from SignWell.
 // Done on demand because completed_pdf_url is often not ready at webhook time.
