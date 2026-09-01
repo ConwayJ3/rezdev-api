@@ -303,6 +303,7 @@ router.post('/webhook', async (req, res) => {
       }).eq('signwell_document_id', docId);
 
       // Background — the webhook must answer immediately or SignWell retries.
+      console.log('[SignWell] starting completed-pdf retry chain for', docId);
       fetchCompletedPdfWithRetry(docId).catch(function(e){
         console.log('[SignWell] completed pdf retry chain failed:', e.message);
       });
