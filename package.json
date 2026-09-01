@@ -1,12 +1,13 @@
 {
   "name": "rezdev-api",
   "version": "1.0.0",
-  "description": "RezDev backend API — Express + Supabase",
+  "description": "RezDev backend API \u2014 Express + Supabase",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node scripts/test-connection.js"
+    "test": "node scripts/test-connection.js",
+    "job:signed-pdfs": "node jobs/fetchSignedPdfs.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
