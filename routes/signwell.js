@@ -938,6 +938,21 @@ router.post('/templates/:type/apply-tags', requireAuth, requireRole('owner','bui
   }
 });
 
+// pdf_url and signed_pdf_url hold storage PATHS. Rendered raw in an href they
+// resolve against the app's own domain and 404. Three separate routes serve
+// this data, so the signing lives here rather than being remembered at each.
+async function signContractUrls(rows){
+  const { resolveStorageUrl } = require('../lib/storage');
+  return Promise.all((rows || []).map(async function(c){
+    const out = Object.assign({}, c);
+    try {
+      if(c.pdf_url)        out.pdf_url        = await resolveStorageUrl('contracts', c.pdf_url);
+      if(c.signed_pdf_url) out.signed_pdf_url = await resolveStorageUrl('contracts', c.signed_pdf_url);
+    } catch(e){ /* leave as stored rather than dropping the row */ }
+    return out;
+  }));
+}
+
 // GET /signwell/my-contracts/:projectId — contracts for the logged-in client on a project
 router.get('/my-contracts/:projectId', requireAuth, async (req, res) => {
   try {
@@ -956,7 +971,7 @@ router.get('/my-contracts/:projectId', requireAuth, async (req, res) => {
     if(role === 'client'){
       rows = rows.filter(r => (r.recipient_email||'').toLowerCase() === clientEmail.toLowerCase());
     }
-    res.json(rows);
+    res.json(await signContractUrls(rows));
   } catch(e){
     res.status(500).json({ error: e.message });
   }
