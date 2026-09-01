@@ -118,7 +118,20 @@ ctrRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 
   const { data, error } = await q.order('created_at', { ascending: false });
   if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+
+  // pdf_url and signed_pdf_url hold storage PATHS. Rendered raw they resolve
+  // against the app's own domain and 404 — sign them here, the same way
+  // /signwell/my-contracts does, so every consumer of this route gets a
+  // usable link.
+  const signed = await Promise.all((data || []).map(async function(c){
+    const out = Object.assign({}, c);
+    try {
+      if(c.pdf_url)        out.pdf_url        = await resolveStorageUrl('contracts', c.pdf_url);
+      if(c.signed_pdf_url) out.signed_pdf_url = await resolveStorageUrl('contracts', c.signed_pdf_url);
+    } catch(e){ /* leave as stored rather than dropping the row */ }
+    return out;
+  }));
+  res.json(signed);
 });
 
 ctrRouter.post('/', requireAuth, requireRole('owner','builder'), requireProjectAccess, async (req, res) => {
