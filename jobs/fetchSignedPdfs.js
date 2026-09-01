@@ -28,7 +28,8 @@ async function run(){
 
   const { data: pending, error } = await supabaseAdmin
     .from('contracts')
-    .select('id, company_id, signwell_document_id, signed_at, signed_pdf_url')
+    // contracts has no company_id — ownership runs through the project.
+    .select('id, project_id, signwell_document_id, signed_at, signed_pdf_url, projects(company_id)')
     .eq('status', 'signed')
     .is('signed_pdf_url', null)
     .not('signwell_document_id', 'is', null)
@@ -64,7 +65,8 @@ async function run(){
         continue;
       }
 
-      const name = (c.company_id || 'company') + '/signed/' + c.id + '_signed.pdf';
+      const companyId = (c.projects && c.projects.company_id) || 'company';
+      const name = companyId + '/signed/' + c.id + '_signed.pdf';
       const path = await uploadFile('contracts', name, buf, 'application/pdf');
 
       // Store the PATH — signed on read, same as everywhere else.
