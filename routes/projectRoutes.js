@@ -1224,7 +1224,12 @@ publicRfpRouter.get('/:token', async (req, res) => {
 // deploy — a brake on casual abuse, not a real rate limiter.
 const RFP_ESTIMATE_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
 const RFP_ESTIMATE_MAX_BYTES = 10 * 1024 * 1024;
-const RFP_ESTIMATE_MAX_PER_TOKEN = 5;
+// A public link can reach a whole trade group, so five uploads TOTAL blocked
+// legitimate bidders. This is abuse protection, not a business rule — the real
+// limits are file type, size, and the RFP being open. Note the counter is
+// in-memory and resets when the container recycles, so it's a speed bump
+// rather than a guarantee.
+const RFP_ESTIMATE_MAX_PER_TOKEN = 200;
 const _rfpUploadCounts = Object.create(null);
 
 publicRfpRouter.post('/:token/estimate', upload.single('file'), async (req, res) => {
