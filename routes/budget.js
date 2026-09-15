@@ -98,7 +98,19 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
     }
   }
 
-  res.json({ success: true });
+  // A new line item needs a QuickBooks item, or costs booked against it in
+  // QBO land in Miscellaneous. Deliberately non-fatal: QuickBooks being down,
+  // disconnected, or slow must never stop a budget from saving.
+  let qbSynced = 0;
+  try {
+    const qb = require('./quickbooks');
+    if(qb && typeof qb.syncNewItems === 'function'){
+      const r = await qb.syncNewItems(req.companyId);
+      qbSynced = (r && r.created) || 0;
+    }
+  } catch(e){ console.log('[Budget] QuickBooks item sync skipped:', e && e.message); }
+
+  res.json({ success: true, qb_items_created: qbSynced });
 });
 
 // GET /projects/:projectId/budget/transactions

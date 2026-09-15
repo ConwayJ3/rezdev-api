@@ -295,12 +295,105 @@ async function ensureJobCostAccount(companyId){
   return acctId;
 }
 
+// The line items a company ACTUALLY uses, across all their budgets. The
+// hardcoded catalog is only a fallback for a company with no budgets yet —
+// builders add and rename items, and anything missing here lands in
+// Miscellaneous when it syncs back from QuickBooks.
+async function companyLineItems(companyId){
+  const { data: projects } = await supabaseAdmin.from('projects')
+    .select('id').eq('company_id', companyId);
+  const projectIds = (projects || []).map(function(p){ return p.id; });
+  if(!projectIds.length) return REZDEV_LINE_ITEMS.slice();
+
+  const { data: items } = await supabaseAdmin.from('budget_items')
+    .select('name, budget_sections(section_id, label)')
+    .in('project_id', projectIds);
+
+  const seen = Object.create(null);
+  (items || []).forEach(function(it){
+    const name = (it.name || '').trim();
+    if(!name || seen[name]) return;
+    const sec = it.budget_sections || {};
+    seen[name] = {
+      section_id: sec.section_id || 'misc',
+      section_title: sec.label || 'Miscellaneous',
+      name: name,
+    };
+  });
+
+  const list = Object.keys(seen).map(function(k){ return seen[k]; });
+  return list.length ? list : REZDEV_LINE_ITEMS.slice();
+}
+
+// Create QuickBooks items for names that aren't mapped yet. Called from the
+// budget save so a new line item maps itself; the Re-sync button remains as a
+// repair for anything this missed.
+async function syncNewItems(companyId){
+  const { data: tokenRow } = await supabaseAdmin.from('quickbooks_tokens')
+    .select('company_id').eq('company_id', companyId).maybeSingle();
+  if(!tokenRow) return { skipped: 'not connected' };
+
+  const wanted = await companyLineItems(companyId);
+  const { data: mapped } = await supabaseAdmin.from('quickbooks_item_map')
+    .select('line_item_name').eq('company_id', companyId);
+  const have = Object.create(null);
+  (mapped || []).forEach(function(m){ have[m.line_item_name] = true; });
+
+  const missing = wanted.filter(function(li){ return !have[li.name]; });
+  if(!missing.length) return { created: 0 };
+
+  const acctId = await ensureJobCostAccount(companyId);
+  let created = 0;
+  for(const li of missing){
+    try {
+      const q = encodeURIComponent("SELECT * FROM Item WHERE Name = '" + li.name.replace(/'/g, "\\'") + "'");
+      const found = await qbApiCall(companyId, 'GET', '/query?query=' + q);
+      let qbItem = found.QueryResponse && found.QueryResponse.Item && found.QueryResponse.Item[0];
+
+      if(!qbItem){
+        const madeItem = await qbApiCall(companyId, 'POST', '/item', {
+          Name: li.name.slice(0, 100),
+          Type: 'Service',
+          IncomeAccountRef: { value: acctId },
+          ExpenseAccountRef: { value: acctId },
+          PurchaseCost: 0,
+          PurchaseDesc: li.name.slice(0, 100),
+        });
+        qbItem = madeItem.Item;
+      }
+
+      if(qbItem && qbItem.Id){
+        await supabaseAdmin.from('quickbooks_item_map').upsert({
+          company_id: companyId,
+          line_item_name: li.name,
+          section_id: li.section_id,
+          qb_item_id: qbItem.Id,
+        }, { onConflict: 'company_id,line_item_name' });
+        created++;
+      }
+    } catch(e){
+      console.log('[QB] could not sync item', li.name, '-', e && e.message);
+    }
+  }
+  return { created: created };
+}
+
 // ─── GET /integrations/quickbooks/items/status ─────────────
 router.get('/items/status', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  const wanted = await companyLineItems(req.companyId);
   const { data } = await supabaseAdmin.from('quickbooks_item_map')
     .select('line_item_name, qb_item_id').eq('company_id', req.companyId);
-  const mapped = (data || []).filter(d => d.qb_item_id).length;
-  res.json({ total: REZDEV_LINE_ITEMS.length, mapped, complete: mapped >= REZDEV_LINE_ITEMS.length });
+
+  const have = Object.create(null);
+  (data || []).forEach(function(d){ if(d.qb_item_id) have[d.line_item_name] = true; });
+  const mapped = wanted.filter(function(li){ return have[li.name]; }).length;
+
+  res.json({
+    total: wanted.length,
+    mapped: mapped,
+    complete: mapped >= wanted.length,
+    missing: wanted.filter(function(li){ return !have[li.name]; }).map(function(li){ return li.name; }),
+  });
 });
 
 // ─── POST /integrations/quickbooks/items/patch ────────────
@@ -350,7 +443,8 @@ router.post('/items/setup', requireAuth, requireRole('owner','builder'), async (
     let created = 0, linked = 0, failed = 0;
     const errors = [];
 
-    for(const li of REZDEV_LINE_ITEMS){
+    const lineItems = await companyLineItems(req.companyId);
+    for(const li of lineItems){
       // Skip if already mapped
       const { data: existing } = await supabaseAdmin.from('quickbooks_item_map')
         .select('qb_item_id').eq('company_id', req.companyId).eq('line_item_name', li.name).single();
@@ -625,5 +719,7 @@ router.getValidToken = getValidToken;
 router.qbApiCall = qbApiCall;
 router.REZDEV_LINE_ITEMS = REZDEV_LINE_ITEMS;
 router.ensureJobCostAccount = ensureJobCostAccount;
+router.companyLineItems = companyLineItems;
+router.syncNewItems = syncNewItems;
 router.QB_API_BASE = QB_API_BASE;
 module.exports = router;
