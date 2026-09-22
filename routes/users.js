@@ -289,7 +289,9 @@ router.put('/companies/:id', requireAuth, async (req, res) => {
   if(!req.user || !['owner','builder'].includes(req.userRole)){
     return res.status(403).json({ error: 'Not authorized' });
   }
-  const allowed = ['name','legal_name','address','city','state','zip','phone','email','website','primary_color','secondary_color','license_number'];
+  // 'settings' holds the working calendar among other things — it was being
+  // dropped here, so schedule preferences never saved.
+  const allowed = ['name','legal_name','address','city','state','zip','phone','email','website','primary_color','secondary_color','license_number','settings'];
   const updates = {};
   allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
   updates.updated_at = new Date().toISOString();
