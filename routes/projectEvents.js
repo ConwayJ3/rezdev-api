@@ -24,7 +24,7 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 // POST /projects/:projectId/events — create
 router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
   try {
-    const { title, type, event_date, event_time, end_time, location, notes, visible_to_client } = req.body;
+    const { title, type, event_date, event_time, end_time, location, notes, visible_to_client, draw_allocations } = req.body;
     if(!title || !event_date) return res.status(400).json({ error: 'title and event_date required' });
     const { data, error } = await supabaseAdmin
       .from('project_events')
@@ -38,8 +38,7 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
         location: location || null,
         notes: notes || null,
         visible_to_client: visible_to_client !== false,
-        created_by: req.userId,
-      })
+        created_by: req.userId, draw_allocations: draw_allocations || []})
       .select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.json(data);
@@ -49,7 +48,7 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
 // PUT /projects/:projectId/events/:id — update
 router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
   try {
-    const allowed = ['title','type','event_date','event_time','end_time','location','notes','visible_to_client'];
+    const allowed = ['title','type','event_date','event_time','end_time','location','notes','visible_to_client','draw_allocations'];
     const updates = {};
     allowed.forEach(k => { if(req.body[k] !== undefined) updates[k] = req.body[k]; });
     updates.updated_at = new Date().toISOString();
