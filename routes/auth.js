@@ -80,9 +80,29 @@ router.post('/forgot-password', async (req, res) => {
 
 // POST /auth/reset-password
 router.post('/reset-password', requireAuth, async (req, res) => {
-  const { password } = req.body;
+  const { password, current_password } = req.body;
   if(!password || password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+
+  // Prove it's really them. Without this, anyone reaching a live session could
+  // change the password and lock the account's owner out.
+  // set-password.html arrives on a recovery link, where Supabase has already
+  // verified identity — it passes skip_current.
+  if(!req.body.skip_current){
+    const email = req.user && req.user.email;
+    if(!current_password){
+      return res.status(400).json({ error: 'Enter your current password' });
+    }
+    if(!email){
+      return res.status(400).json({ error: 'Could not verify your account' });
+    }
+    const { createClient } = require('@supabase/supabase-js');
+    const check = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    const { error: authErr } = await check.auth.signInWithPassword({ email, password: current_password });
+    if(authErr){
+      return res.status(400).json({ error: 'Your current password is not correct' });
+    }
   }
 
   const { error } = await supabaseAdmin.auth.admin.updateUserById(req.userId, { password });
