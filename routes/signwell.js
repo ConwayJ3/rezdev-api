@@ -484,6 +484,18 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
     .from('projects').select('*, budget_configs(total_budget, build_budget)').eq('id', projectId).maybeSingle();
   const { data: company } = await supabaseAdmin
     .from('companies').select('*').eq('id', companyId).maybeSingle();
+  // The recipient may be a contractor in this company's directory. Matching
+  // on email gives the agreement their real legal company name, licence and
+  // contact details rather than only the name the dropdown passed.
+  let contractor = null;
+  if(clientEmail){
+    const { data: rows } = await supabaseAdmin
+      .from('contractors').select('*')
+      .eq('company_id', companyId)
+      .ilike('email', String(clientEmail).trim())
+      .limit(1);
+    contractor = (rows && rows[0]) || null;
+  }
   // Load the full budget config for this project
   const { data: budget } = await supabaseAdmin
     .from('budget_configs').select('*').eq('project_id', projectId).maybeSingle();
@@ -519,8 +531,16 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
     client_2_name:   (typeof client_2_name !== 'undefined' ? client_2_name : (project && project.client_2_name)) || '',
     client_2_email:  (typeof client_2_email !== 'undefined' ? client_2_email : (project && project.client_2_email)) || '',
     // Contractor (aliases so contractor/subcontractor templates read naturally)
-    contractor_name:  clientName || '',
-    contractor_email: clientEmail || '',
+    // Contractor details come from their DIRECTORY RECORD, matched on the
+    // recipient email. contractor_name was previously just an echo of the
+    // name the dropdown supplied, and there was no company name at all.
+    contractor_company: (contractor && contractor.company_name) || '',
+    contractor_name:    (contractor && contractor.contact_name) || clientName || '',
+    contractor_email:   (contractor && contractor.email) || clientEmail || '',
+    contractor_phone:   (contractor && contractor.phone) || '',
+    contractor_address: (contractor && contractor.address) || '',
+    contractor_license: (contractor && contractor.license_number) || '',
+    contractor_trade:   (contractor && contractor.trade) || '',
     // Contract-specific values supplied at send time (scope, amount, trade, etc.)
     contract_amount:  (extra && extra.contract_amount) || '',
     scope_of_work:    (extra && extra.scope_of_work) || '',
