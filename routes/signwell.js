@@ -559,8 +559,11 @@ async function buildDocxMergeData({ companyId, projectId, clientName, clientEmai
 router.post('/send-docx-contract', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
     const { project_id, contract_type, client_name, client_email, client_2_name, client_2_email, extra_fields } = req.body;
-    const hasClient2 = !!(client_2_email && String(client_2_email).trim());
     const ctype = contract_type || 'client';
+    // A co-signer is the CLIENT's second signer. Attaching one to a
+    // contractor, NDA or custom agreement puts an unrelated person on
+    // someone else's contract — and with signing order on, blocks it.
+    const hasClient2 = ctype === 'client' && !!(client_2_email && String(client_2_email).trim());
     const providedTitle = (req.body.title || '').trim();
     if(!project_id) return res.status(400).json({ error: 'project_id required' });
     if(!client_email || !client_email.trim()){
