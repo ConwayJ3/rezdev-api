@@ -88,6 +88,9 @@ app.use('/projects/:projectId/phases',         phaseRoutes);
 app.use('/projects/:projectId/events',         projectEventRoutes);
 app.use('/projects/:projectId/budget',         budgetRoutes);
 app.use('/projects/:projectId/messages',       messageRoutes);
+// Also unscoped, so a contractor or client can list their conversations
+// across projects before choosing one (GET /messages/mine).
+app.use('/messages',                           messageRoutes);
 // signed-url only; everything else falls through to fileRoutes below
 app.use('/projects/:projectId/files',          pFileRouter);
 app.use('/projects/:projectId/files',          fileRoutes);
