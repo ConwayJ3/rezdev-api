@@ -117,6 +117,45 @@ router.post('/:id/invite', requireAuth, requireRole('owner','builder'), async (r
 
 const DOC_TYPES = ['coi', 'w9'];
 
+// A contractor's banking, for the builder who needs to pay them. Masked by
+// default: a directory page shouldn't hold full account numbers just to show
+// who has details on file. ?reveal=1 returns them, so seeing the numbers is
+// a deliberate act.
+router.get('/:id/banking', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+  try {
+    const { data: c } = await supabaseAdmin.from('contractors')
+      .select('id, company_id, user_id').eq('id', req.params.id).maybeSingle();
+    if(!c || c.company_id !== req.companyId){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if(!c.user_id) return res.json({ on_file: false });
+
+    const { data: b } = await supabaseAdmin.from('contractor_banking')
+      .select('*').eq('user_id', c.user_id).maybeSingle();
+    if(!b) return res.json({ on_file: false });
+
+    const last4 = function(v){
+      const s = String(v || '');
+      return s ? '••••' + s.slice(-4) : '';
+    };
+    const reveal = req.query.reveal === '1';
+
+    res.json({
+      on_file: true,
+      bank_name: b.bank_name || '',
+      account_holder: b.account_holder || '',
+      account_type: b.account_type || '',
+      ach_same_as_wire: b.ach_same_as_wire !== false,
+      updated_at: b.updated_at,
+      account_number: reveal ? (b.account_number || '') : last4(b.account_number),
+      routing_number: reveal ? (b.routing_number || '') : last4(b.routing_number),
+      ach_account_number: reveal ? (b.ach_account_number || '') : last4(b.ach_account_number),
+      ach_routing_number: reveal ? (b.ach_routing_number || '') : last4(b.ach_routing_number),
+      revealed: reveal,
+    });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // Compliance is a fact about documents, not a default. Current means a W-9
 // on file AND a COI on file that hasn't expired.
 function complianceFromDocs(docs){
