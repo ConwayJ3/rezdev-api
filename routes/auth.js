@@ -116,7 +116,7 @@ router.post('/invite', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only owners and builders can invite users' });
   }
 
-  const { email, first_name, last_name, role, projects } = req.body;
+  const { email, first_name, last_name, role, projects, company_name, trade } = req.body;
   if(!email || !first_name || !last_name || !role) {
     return res.status(400).json({ error: 'email, first_name, last_name, role required' });
   }
@@ -146,6 +146,31 @@ router.post('/invite', requireAuth, async (req, res) => {
     .single();
 
   if(profileErr) return res.status(400).json({ error: profileErr.message });
+
+  // A contractor needs a directory record, or the portal can't find them:
+  // it looks them up by user_id and shows an empty shell without one. Invites
+  // from User Management used to skip this, so anyone added that way signed
+  // in to nothing.
+  if(role === 'contractor'){
+    try {
+      const { data: existing } = await supabaseAdmin.from('contractors')
+        .select('id').eq('company_id', req.companyId).ilike('email', email).limit(1);
+      if(existing && existing.length){
+        await supabaseAdmin.from('contractors')
+          .update({ user_id: authUser.user.id, status: 'active' }).eq('id', existing[0].id);
+      } else {
+        await supabaseAdmin.from('contractors').insert({
+          company_id:   req.companyId,
+          user_id:      authUser.user.id,
+          company_name: company_name || [first_name, last_name].filter(Boolean).join(' '),
+          contact_name: [first_name, last_name].filter(Boolean).join(' '),
+          trade:        trade || '',
+          email,
+          status:       'active',
+        });
+      }
+    } catch(e){ console.log('[Invite] contractor record failed:', e.message); }
+  }
 
   // If PM and projects provided, create assignments
   if(role === 'pm' && projects && projects.length) {
