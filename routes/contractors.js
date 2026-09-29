@@ -115,7 +115,9 @@ router.post('/:id/invite', requireAuth, requireRole('owner','builder'), async (r
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
 
-const DOC_TYPES = ['coi', 'w9'];
+// wc = workers' compensation. Optional: not every sub carries it, so it
+// never blocks compliance, but the certificate is worth holding.
+const DOC_TYPES = ['coi', 'w9', 'wc'];
 
 // A contractor's banking, for the builder who needs to pay them. Masked by
 // default: a directory page shouldn't hold full account numbers just to show
@@ -180,8 +182,22 @@ function complianceFromDocs(docs){
   const ok = (w9State === 'current') &&
              (coiState === 'current' || coiState === 'expiring');
 
+  // Workers' comp is reported but never required.
+  const wc = newest('wc');
+  let wcState = 'missing', wcExpires = null;
+  if(wc){
+    wcExpires = wc.expires_on || null;
+    if(!wcExpires) wcState = 'no_date';
+    else {
+      const e = new Date(wcExpires + 'T12:00');
+      const d = Math.round((e - today) / 86400000);
+      wcState = d < 0 ? 'expired' : (d <= 30 ? 'expiring' : 'current');
+    }
+  }
+
   return { status: ok ? (coiState === 'expiring' ? 'expiring' : 'current') : 'action_required',
-           coi: coiState, coi_expires_on: coiExpires, w9: w9State };
+           coi: coiState, coi_expires_on: coiExpires, w9: w9State,
+           wc: wcState, wc_expires_on: wcExpires };
 }
 
 // Compliance across every contractor — powers the directory column.
@@ -256,9 +272,10 @@ router.post('/:id/documents', requireAuth, docUpload.single('file'), async (req,
     }
     // Only a COI expires. A W-9 doesn't lapse, so asking for a date there
     // would be asking for something meaningless.
-    const expiresOn = (docType === 'coi' && req.body.expires_on) ? req.body.expires_on : null;
-    if(docType === 'coi' && !expiresOn){
-      return res.status(400).json({ error: 'An expiry date is required for a certificate of insurance' });
+    const DATED = ['coi', 'wc'];
+    const expiresOn = (DATED.indexOf(docType) !== -1 && req.body.expires_on) ? req.body.expires_on : null;
+    if(DATED.indexOf(docType) !== -1 && !expiresOn){
+      return res.status(400).json({ error: 'An expiry date is required for that certificate' });
     }
 
     const { uploadFile } = require('../lib/storage');
