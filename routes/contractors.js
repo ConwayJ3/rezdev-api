@@ -183,7 +183,7 @@ function complianceFromDocs(docs){
              (coiState === 'current' || coiState === 'expiring');
 
   // Workers' comp is reported but never required.
-  const wc = newest('wc');
+  const wc = list.find(function(d){ return d.doc_type === 'wc'; });
   let wcState = 'missing', wcExpires = null;
   if(wc){
     wcExpires = wc.expires_on || null;
