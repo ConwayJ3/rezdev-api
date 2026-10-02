@@ -12,13 +12,24 @@ const upload = multer({
 
 // GET /projects/:projectId/files
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
-  const { data, error } = await req.db
+  const { data: all, error } = await req.db
     .from('project_files')
     .select('id, name, storage_url, file_size, mime_type, source, uploaded_at, uploaded_by')
     .eq('project_id', req.params.projectId)
     .order('uploaded_at', { ascending: false });
 
   if(error) return res.status(400).json({ error: error.message });
+
+  // Being on a project is not permission to read everything filed under it.
+  // A contractor sees what was shared with them and nothing else; the client
+  // keeps the view they have always had.
+  let data = all || [];
+  if(req.userRole === 'contractor'){
+    const { data: shares } = await supabaseAdmin.from('project_file_shares')
+      .select('file_id').eq('user_id', req.userId);
+    const allowed = new Set((shares || []).map(function(s){ return s.file_id; }));
+    data = data.filter(function(f){ return allowed.has(f.id); });
+  }
 
   // Generate signed URLs for each file
   const filesWithUrls = await Promise.all(data.map(async f => {
@@ -99,8 +110,68 @@ router.delete('/:id', requireAuth, requireProjectAccess, async (req, res) => {
   res.json({ success: true });
 });
 
+// Who a file is shared with. Builder side only — a contractor has no
+// business knowing which other trades hold the same document.
+router.get('/:id/shares', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    if(!['owner','builder','pm'].includes(req.userRole)){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    const { data: shares } = await supabaseAdmin.from('project_file_shares')
+      .select('user_id, shared_at').eq('file_id', req.params.id);
+    res.json(shares || []);
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.post('/:id/shares', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    if(!['owner','builder','pm'].includes(req.userRole)){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    const { user_id } = req.body;
+    if(!user_id) return res.status(400).json({ error: 'user_id required' });
+
+    // The file must belong to this project, and the recipient must be on it.
+    const { data: file } = await supabaseAdmin.from('project_files')
+      .select('id').eq('id', req.params.id).eq('project_id', req.params.projectId).maybeSingle();
+    if(!file) return res.status(404).json({ error: 'File not found on this project' });
+
+    const { data: assigned } = await supabaseAdmin.from('project_contractors')
+      .select('id').eq('project_id', req.params.projectId).eq('user_id', user_id).limit(1);
+    if(!assigned || !assigned.length){
+      return res.status(400).json({ error: 'That contractor is not assigned to this project' });
+    }
+
+    const { error } = await supabaseAdmin.from('project_file_shares')
+      .upsert({ file_id: req.params.id, user_id: user_id, shared_by: req.userId },
+              { onConflict: 'file_id,user_id' });
+    if(error) return res.status(400).json({ error: error.message });
+    res.status(201).json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/:id/shares/:userId', requireAuth, requireProjectAccess, async (req, res) => {
+  try {
+    if(!['owner','builder','pm'].includes(req.userRole)){
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    await supabaseAdmin.from('project_file_shares')
+      .delete().eq('file_id', req.params.id).eq('user_id', req.params.userId);
+    res.json({ ok: true });
+  } catch(e){ res.status(500).json({ error: e.message }); }
+});
+
 // GET /projects/:projectId/files/:id/download — get fresh signed URL
 router.get('/:id/download', requireAuth, requireProjectAccess, async (req, res) => {
+  // A direct download must respect sharing too, or the list filter is
+  // decoration — the id is guessable from any shared file's response.
+  if(req.userRole === 'contractor'){
+    const { data: share } = await supabaseAdmin.from('project_file_shares')
+      .select('id').eq('file_id', req.params.id).eq('user_id', req.userId).limit(1);
+    if(!share || !share.length){
+      return res.status(403).json({ error: 'That file has not been shared with you' });
+    }
+  }
   const { data: file } = await supabaseAdmin
     .from('project_files')
     .select('storage_url, name, mime_type')
