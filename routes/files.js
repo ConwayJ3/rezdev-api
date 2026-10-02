@@ -24,7 +24,10 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
   // A contractor sees what was shared with them and nothing else; the client
   // keeps the view they have always had.
   let data = all || [];
-  if(req.userRole === 'contractor'){
+  // Nothing is visible to anyone outside the builder's own team until it is
+  // shared. A client used to see every file on their project, which meant
+  // anything uploaded for a subcontractor landed in front of them too.
+  if(req.userRole === 'contractor' || req.userRole === 'client'){
     const { data: shares } = await supabaseAdmin.from('project_file_shares')
       .select('file_id').eq('user_id', req.userId);
     const allowed = new Set((shares || []).map(function(s){ return s.file_id; }));
@@ -136,10 +139,13 @@ router.post('/:id/shares', requireAuth, requireProjectAccess, async (req, res) =
       .select('id').eq('id', req.params.id).eq('project_id', req.params.projectId).maybeSingle();
     if(!file) return res.status(404).json({ error: 'File not found on this project' });
 
-    const { data: assigned } = await supabaseAdmin.from('project_contractors')
+    // The recipient must be on this project — as a contractor or a client.
+    const { data: asCrew } = await supabaseAdmin.from('project_contractors')
       .select('id').eq('project_id', req.params.projectId).eq('user_id', user_id).limit(1);
-    if(!assigned || !assigned.length){
-      return res.status(400).json({ error: 'That contractor is not assigned to this project' });
+    const { data: asClient } = await supabaseAdmin.from('project_clients')
+      .select('id').eq('project_id', req.params.projectId).eq('user_id', user_id).limit(1);
+    if((!asCrew || !asCrew.length) && (!asClient || !asClient.length)){
+      return res.status(400).json({ error: 'That person is not on this project' });
     }
 
     const { error } = await supabaseAdmin.from('project_file_shares')
@@ -165,7 +171,7 @@ router.delete('/:id/shares/:userId', requireAuth, requireProjectAccess, async (r
 router.get('/:id/download', requireAuth, requireProjectAccess, async (req, res) => {
   // A direct download must respect sharing too, or the list filter is
   // decoration — the id is guessable from any shared file's response.
-  if(req.userRole === 'contractor'){
+  if(req.userRole === 'contractor' || req.userRole === 'client'){
     const { data: share } = await supabaseAdmin.from('project_file_shares')
       .select('id').eq('file_id', req.params.id).eq('user_id', req.userId).limit(1);
     if(!share || !share.length){
