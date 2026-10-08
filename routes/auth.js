@@ -71,7 +71,9 @@ router.post('/forgot-password', async (req, res) => {
   if(!email) return res.status(400).json({ error: 'Email required' });
 
   const { error } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
+    // /reset-password does not exist — every other flow here uses
+    // set-password.html, and this one sent people to a 404.
+    redirectTo: `${process.env.FRONTEND_URL}/set-password.html`,
   });
 
   // Always return success to prevent email enumeration
