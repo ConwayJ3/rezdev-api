@@ -190,7 +190,10 @@ router.post('/invite-client', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Not authorized to invite clients' });
   }
   const { email, first_name, last_name, project_id } = req.body;
-  const role = ['client','pm','builder'].includes(req.body.role) ? req.body.role : 'client';
+  // 'contractor' was missing here, so picking Contractor in the invite form
+  // fell through to 'client' without an error — silently wrong, every time.
+  const ALLOWED_ROLES = ['client','pm','builder','contractor'];
+  const role = ALLOWED_ROLES.includes(req.body.role) ? req.body.role : 'client';
   if(!email || !first_name) {
     return res.status(400).json({ error: 'email and first_name required' });
   }
@@ -224,6 +227,29 @@ router.post('/invite-client', requireAuth, async (req, res) => {
         status:     'pending',
       });
     if(profileErr) return res.status(400).json({ error: profileErr.message });
+
+    // 2b. A contractor needs a directory record or their portal can't find
+    // them — it looks them up by user_id and shows an empty shell without one.
+    if(role === 'contractor'){
+      try {
+        const { data: existing } = await supabaseAdmin.from('contractors')
+          .select('id').eq('company_id', req.companyId).ilike('email', email).limit(1);
+        if(existing && existing.length){
+          await supabaseAdmin.from('contractors')
+            .update({ user_id: authUser.user.id, status: 'active' }).eq('id', existing[0].id);
+        } else {
+          await supabaseAdmin.from('contractors').insert({
+            company_id:   req.companyId,
+            user_id:      authUser.user.id,
+            company_name: req.body.company_name || [first_name, last_name].filter(Boolean).join(' '),
+            contact_name: [first_name, last_name].filter(Boolean).join(' '),
+            trade:        req.body.trade || '',
+            email,
+            status:       'active',
+          });
+        }
+      } catch(e){ console.log('[InviteClient] contractor record failed:', e.message); }
+    }
 
     // 3. Generate a secure set-password (recovery) link pointing to our branded page
     const appUrl = process.env.FRONTEND_URL || 'https://rezdevos.com';
