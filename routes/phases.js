@@ -8,7 +8,7 @@ const { calendarFromSettings, makeIsWorkDay, addDays, iso } = require('../lib/wo
 // Phases run sequentially in sort_order; phases flagged simultaneous run
 // parallel to the previous phase (share its start), not after it.
 // An explicit start_date already on a phase re-anchors the chain from there.
-function computePhaseDates(phases, scheduleStart, calendar){
+function computePhaseDates(phases, scheduleStart, calendar, delays){
   const cal = calendar || calendarFromSettings(null);
   const anchorYear = scheduleStart ? parseInt(scheduleStart.slice(0,4), 10) : new Date().getUTCFullYear();
   // Enough span for a long build plus its holidays either side.
@@ -20,7 +20,11 @@ function computePhaseDates(phases, scheduleStart, calendar){
   let anchor = scheduleStart ? new Date(scheduleStart+'T00:00:00Z') : null;
   let prevStart = null, prevEnd = null;
   return phases.map(p => {
-    const days = Math.max(1, parseInt(p.days,10) || 7);
+    // A logged delay lengthens the phase. The delay form asks for actual
+    // days against scheduled days, so it is work that took longer, not work
+    // that started late — and everything downstream moves with it.
+    const lost = (delays && delays[p.id]) ? delays[p.id] : 0;
+    const days = Math.max(1, (parseInt(p.days,10) || 7) + lost);
     // If this phase has an explicitly set start_date, re-anchor to it.
     if(p.start_date){ anchor = new Date(p.start_date+'T00:00:00Z'); }
     if(!anchor){
@@ -69,7 +73,19 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
     }
   } catch(e){}
 
-  const computed = computePhaseDates(data || [], scheduleStart, calendar);
+  // Total the days logged against each phase. Without this the delay log
+  // was a note nothing read.
+  const delayDays = {};
+  try {
+    const { data: logged } = await supabaseAdmin.from('delay_log')
+      .select('phase_id, days_delayed').eq('project_id', req.params.projectId);
+    (logged || []).forEach(function(d){
+      if(!d.phase_id) return;
+      delayDays[d.phase_id] = (delayDays[d.phase_id] || 0) + (parseInt(d.days_delayed, 10) || 0);
+    });
+  } catch(e){}
+
+  const computed = computePhaseDates(data || [], scheduleStart, calendar, delayDays);
   res.json(computed);
 });
 
