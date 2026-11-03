@@ -2055,8 +2055,15 @@ delayRouter.get('/', requireAuth, async (req, res) => {
   res.json(data);
 });
 delayRouter.post('/', requireAuth, async (req, res) => {
-  const { phase_id, contractor, reason, days_delayed } = req.body;
-  const { data, error } = await supabaseAdmin.from('delay_log').insert({ project_id: req.params.projectId, phase_id, contractor, reason, days_delayed: days_delayed||0 }).select().single();
+  const { phase_id, contractor, reason, days_delayed, scheduled_days, actual_days, note, logged_by } = req.body;
+  const { data, error } = await supabaseAdmin.from('delay_log').insert({
+    project_id: req.params.projectId, phase_id, contractor, reason,
+    days_delayed: days_delayed||0,
+    scheduled_days: scheduled_days || null,
+    actual_days:    actual_days || null,
+    note:           note || '',
+    logged_by:      logged_by || '',
+  }).select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
 });
