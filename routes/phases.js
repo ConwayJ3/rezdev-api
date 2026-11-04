@@ -85,7 +85,39 @@ router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
     });
   } catch(e){}
 
+  // Dates cascade through the whole ordered list, so compute against every phase
+  // BEFORE any filtering — otherwise a trimmed list produces a schedule with holes
+  // and the wrong dates.
   const computed = computePhaseDates(data || [], scheduleStart, calendar, delayDays);
+
+  // A contractor sees only the phases for the trades they hold on this project.
+  // Done here rather than in the portal: filtering in the browser would still have
+  // sent them the entire schedule. Trades are free text entered on two different
+  // screens, so match trimmed and case-insensitively.
+  if(req.userRole === 'contractor'){
+    try {
+      const { data: mine } = await supabaseAdmin
+        .from('project_contractors')
+        .select('trade')
+        .eq('project_id', req.params.projectId)
+        .eq('user_id', req.userId);
+      const trades = new Set(
+        (mine || [])
+          .map(function(r){ return String(r.trade || '').trim().toLowerCase(); })
+          .filter(Boolean)
+      );
+      const mineOnly = computed.filter(function(p){
+        return trades.has(String(p.assignee || '').trim().toLowerCase());
+      });
+      return res.json(mineOnly);
+    } catch(e){
+      // Can't establish which trades are theirs — send nothing rather than
+      // everything. An empty list is a visible bug; a leaked schedule is not.
+      console.warn('[Phases] contractor trade scope failed:', e && e.message);
+      return res.json([]);
+    }
+  }
+
   res.json(computed);
 });
 
