@@ -93,6 +93,9 @@ router.put('/sections', requireAuth, requireRole('owner','builder'), requireProj
         quantity:      it.quantity != null ? it.quantity : null,
         budget_amount: it.budget || 0,
         sort_order:    i,
+        // Set when the builder typed a sqft into a row whose figure is otherwise
+        // derived from the project's area fields. Their number wins from then on.
+        sqft_manual:   !!it.sqftManual,
       }));
       await supabaseAdmin.from('budget_items').insert(itemRows);
     }
