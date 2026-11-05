@@ -140,11 +140,15 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
 
 // PUT /projects/:projectId/phases/:id
 router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
-  const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor } = req.body;
+  // qc_items is the phase's QC checklist. It must be named here or it is
+  // dropped without a word — the same way tasks and contractor were.
+  const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor, qc_items } = req.body;
 
   const { data, error } = await supabaseAdmin
     .from('phases')
-    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor, updated_at: new Date().toISOString() })
+    // Undefined fields are omitted by supabase-js, so a caller that doesn't send
+    // qc_items leaves the stored checklist alone.
+    .update({ name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor, qc_items, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .eq('project_id', req.params.projectId)
     .select()
