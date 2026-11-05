@@ -376,8 +376,9 @@ router.delete('/:id/photos/:photoId', requireAuth, requireProjectAccess, async (
   // should not stay marked done on evidence that is no longer there.
   let uncompleted = false;
   const left = await countTaskPhotos(req.params.projectId, scope.phase.id, photo.task_idx);
-  const done = Array.isArray(scope.phase.completed_tasks) ? scope.phase.completed_tasks.slice() : [];
-  const at = photo.task_name ? done.indexOf(photo.task_name) : -1;
+  const done = (Array.isArray(scope.phase.completed_tasks) ? scope.phase.completed_tasks : [])
+    .filter(function(v){ return typeof v === 'number'; });
+  const at = done.indexOf(photo.task_idx);
   if(at >= 0 && left < PHOTO_MIN_TO_COMPLETE){
     done.splice(at, 1);
     const total = Array.isArray(scope.phase.tasks) ? scope.phase.tasks.length : 0;
@@ -418,9 +419,13 @@ router.put('/:id/task-complete', requireAuth, requireProjectAccess, async (req, 
   }
 
   const tasks = Array.isArray(scope.phase.tasks) ? scope.phase.tasks : [];
-  const done  = Array.isArray(scope.phase.completed_tasks) ? scope.phase.completed_tasks.slice() : [];
-  const at    = done.indexOf(taskName);
-  if(complete && at < 0) done.push(taskName);
+  // The builder stores task INDICES here (BPD:3216, :3859) and re-maps them when
+  // a task is deleted. Storing names produced a list it could not read. Filtering
+  // to numbers also drops any names written before this was fixed.
+  const done = (Array.isArray(scope.phase.completed_tasks) ? scope.phase.completed_tasks : [])
+    .filter(function(v){ return typeof v === 'number'; });
+  const at = done.indexOf(taskIdx);
+  if(complete && at < 0) done.push(taskIdx);
   if(!complete && at >= 0) done.splice(at, 1);
 
   // Keep phases.progress in step, so the builder's progress bar reflects the
