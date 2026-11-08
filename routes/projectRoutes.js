@@ -1733,6 +1733,27 @@ function drawPackageCoverHtml(opts){
       + '</tr>';
   }).join('');
 
+  // Documented transfers touching the lines above. Labels arrive ready-made from
+  // the route, which can resolve section names; this builder only formats.
+  const adj = Array.isArray(opts.adjustments) ? opts.adjustments : [];
+  const adjHtml = adj.length
+    ? '<h3 class="sec">Budget Adjustments</h3>'
+      + '<div class="note">Budget moved between lines on this project affecting the items above. '
+      + 'Original budgets are unchanged; these are the recorded transfers.</div>'
+      + '<table class="items"><thead><tr>'
+      +   '<th>From</th><th>To</th><th>Reason</th><th class="r">Amount</th>'
+      + '</tr></thead><tbody>'
+      + adj.map(function(a){
+          return '<tr>'
+            + '<td>' + esc(a.from) + '</td>'
+            + '<td>' + esc(a.to) + '</td>'
+            + '<td>' + esc(a.reason || '\u2014') + '</td>'
+            + '<td class="r">' + money(a.amount) + '</td>'
+            + '</tr>';
+        }).join('')
+      + '</tbody></table>'
+    : '';
+
   return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
     + 'body{font-family:Helvetica,Arial,sans-serif;color:#0C2340;margin:48px;}'
     + 'h1{font-size:22px;margin:0 0 4px;}'
@@ -1745,6 +1766,8 @@ function drawPackageCoverHtml(opts){
     + 'table.items td{padding:8px 6px;border-bottom:1px solid #e3e8ee;}'
     + 'td.r,th.r{text-align:right;}'
     + 'tr.total td{font-weight:700;border-top:2px solid #0C2340;border-bottom:none;padding-top:12px;}'
+    + 'h3.sec{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin:34px 0 4px;}'
+    + '.note{font-size:11.5px;color:#6b7280;margin-bottom:12px;}'
     + '</style></head><body>'
     + '<div style="text-align:center;margin-bottom:32px;">'
     +   (opts.logoUrl
@@ -1762,6 +1785,7 @@ function drawPackageCoverHtml(opts){
     + '<tbody>' + rows
     + '<tr class="total"><td>Total</td><td class="r">' + money(opts.total) + '</td></tr>'
     + '</tbody></table>'
+    + adjHtml
     + '</body></html>';
 }
 
@@ -1859,6 +1883,49 @@ lenderDrawRouter.post('/:id/package', requireAuth, requireRole('owner','builder'
     const { data: waivers } = await supabaseAdmin.from('lien_waivers')
       .select('*').eq('draw_id', draw.id).eq('status', 'signed');
 
+    // Budget moved between lines, limited to the lines in this draw. A reader
+    // seeing a line request more than its contract amount can then find the
+    // transfer that covered it, and why, without asking.
+    let adjustments = [];
+    try {
+      const [{ data: moves }, { data: secRows }] = await Promise.all([
+        supabaseAdmin.from('budget_reallocations').select('*')
+          .eq('project_id', req.params.projectId).eq('status', 'approved')
+          .order('created_at'),
+        supabaseAdmin.from('budget_sections').select('section_id, label')
+          .eq('project_id', req.params.projectId),
+      ]);
+
+      const secLabel = { cont: 'Contingency', fee: 'Builder Fee' };
+      (secRows || []).forEach(function(s){ secLabel[s.section_id] = s.label || s.section_id; });
+      const label = function(sec, item){
+        const base = secLabel[sec] || sec || '';
+        return item ? (base + ' \u00b7 ' + item) : base;
+      };
+
+      const keys = {};
+      (lines || []).forEach(function(l){
+        keys[(l.section_key || '') + '::' + (l.item_name || '')] = true;
+      });
+      const touches = function(sec, item){ return !!keys[(sec || '') + '::' + (item || '')]; };
+
+      adjustments = (moves || [])
+        .filter(function(r){
+          return touches(r.to_section, r.to_item) || touches(r.from_section, r.from_item);
+        })
+        .map(function(r){
+          return {
+            from:   label(r.from_section, r.from_item),
+            to:     label(r.to_section,   r.to_item),
+            reason: r.reason,
+            amount: r.amount,
+          };
+        });
+    } catch(e){
+      // A package without the adjustments section is still a valid package.
+      console.log('[Package] adjustments skipped:', e && e.message);
+    }
+
     // Every transaction referenced by this draw, so receipts can be attached
     // to the line that claimed them.
     const txnIds = [];
@@ -1887,6 +1954,7 @@ lenderDrawRouter.post('/:id/package', requireAuth, requireRole('owner','builder'
         notes: draw.notes,
         lines: lines,
         total: total,
+        adjustments: adjustments,
       }),
     }];
 
