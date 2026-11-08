@@ -19,20 +19,24 @@ router.use(requireAuth, requireRole('owner','builder','pm','client'));
 router.get('/', requireAuth, requireProjectAccess, async (req, res) => {
   const pid = req.params.projectId;
 
-  const [config, sections, transactions, gcDraws, investments] = await Promise.all([
+  const [config, sections, transactions, gcDraws, investments, reallocations] = await Promise.all([
     supabaseAdmin.from('budget_configs').select('*').eq('project_id', pid).single(),
     supabaseAdmin.from('budget_sections').select(`*, budget_items(*)`).eq('project_id', pid).order('sort_order'),
     supabaseAdmin.from('transactions').select('*').eq('project_id', pid).order('txn_date'),
     supabaseAdmin.from('gc_draws').select('*').eq('project_id', pid).order('created_at'),
     supabaseAdmin.from('investments').select('*').eq('project_id', pid).order('date'),
+    // Budget moved between lines. In the snapshot so the tracker can show
+    // adjusted figures without a second request.
+    supabaseAdmin.from('budget_reallocations').select('*').eq('project_id', pid).order('created_at'),
   ]);
 
   res.json({
-    config:       config.data || null,
-    sections:     sections.data || [],
-    transactions: transactions.data || [],
-    gc_draws:     gcDraws.data || [],
-    investments:  investments.data || [],
+    config:        config.data || null,
+    sections:      sections.data || [],
+    transactions:  transactions.data || [],
+    gc_draws:      gcDraws.data || [],
+    investments:   investments.data || [],
+    reallocations: reallocations.data || [],
   });
 });
 
@@ -346,6 +350,95 @@ router.delete('/investments/:id', requireAuth, requireRole('owner','builder'), a
   const { error } = await supabaseAdmin
     .from('investments').delete()
     .eq('id', req.params.id).eq('project_id', req.params.projectId);
+  if(error) return res.status(400).json({ error: error.message });
+  res.json({ success: true });
+});
+
+
+// ── Budget reallocations ─────────────────────────────────────────────────────
+// Moving budget between lines. Recorded rather than applied by editing the line,
+// so the original figure and the reason for every move survive — which is the
+// part that matters when a draw is questioned months later.
+//
+// Lines are identified by section key + item NAME, not id, because budget_items
+// ids are regenerated on every budget save. Transactions already link by name
+// for the same reason.
+//
+// Contingency is `from_section: 'cont'` with no item, matching the
+// `__contingency__` pseudo-item the draw builder already uses. It has no stored
+// row: it is derived as categories total x pct, so whatever computes the pool
+// must use the ORIGINAL category totals or a transfer in will inflate it.
+
+// GET /projects/:projectId/budget/reallocations
+router.get('/reallocations', requireAuth, requireProjectAccess, async (req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from('budget_reallocations').select('*')
+    .eq('project_id', req.params.projectId)
+    .order('created_at');
+  if(error) return res.status(400).json({ error: error.message });
+  res.json(data || []);
+});
+
+// POST /projects/:projectId/budget/reallocations
+router.post('/reallocations', requireAuth, requireRole('owner','builder'), requireProjectAccess, async (req, res) => {
+  const { from_section, from_item, to_section, to_item, amount, reason } = req.body;
+  const amt = Number(amount);
+
+  if(!from_section || !to_section){
+    return res.status(400).json({ error: 'from_section and to_section are required' });
+  }
+  if(!(amt > 0)){
+    return res.status(400).json({ error: 'Amount must be greater than zero' });
+  }
+  if(from_section === to_section && (from_item || '') === (to_item || '')){
+    return res.status(400).json({ error: 'Source and destination are the same line' });
+  }
+
+  // Whether this needs sign-off is a company setting. Unset means the builder
+  // decides and the move is simply recorded — which is the common case, and the
+  // one that should not require configuring anything.
+  let needsApproval = false;
+  try {
+    const { data: proj } = await supabaseAdmin
+      .from('projects').select('company_id').eq('id', req.params.projectId).maybeSingle();
+    if(proj && proj.company_id){
+      const { data: co } = await supabaseAdmin
+        .from('companies').select('settings').eq('id', proj.company_id).maybeSingle();
+      const s         = (co && co.settings && co.settings.budget) || {};
+      const mode      = s.reallocation_approval || 'none';
+      const threshold = Number(s.reallocation_threshold) || 0;
+      needsApproval = (mode === 'client') || (mode === 'threshold' && amt >= threshold);
+    }
+  } catch(e){ /* unset, or unreadable — treat as no approval required */ }
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabaseAdmin.from('budget_reallocations').insert({
+    project_id:   req.params.projectId,
+    from_section: from_section,
+    from_item:    from_item || null,
+    to_section:   to_section,
+    to_item:      to_item || null,
+    amount:       amt,
+    reason:       reason || null,
+    status:       needsApproval ? 'pending' : 'approved',
+    requested_by: req.userId,
+    approved_by:  needsApproval ? null : req.userId,
+    approved_at:  needsApproval ? null : now,
+  }).select().single();
+
+  if(error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// DELETE /projects/:projectId/budget/reallocations/:id
+// Narrow on purpose: a move that has been applied to a funded draw should be
+// reversed with an opposite entry, not erased. Deleting is for correcting a
+// mistake before it has been relied on.
+router.delete('/reallocations/:id', requireAuth, requireRole('owner','builder'), requireProjectAccess, async (req, res) => {
+  const { error } = await supabaseAdmin
+    .from('budget_reallocations').delete()
+    .eq('id', req.params.id)
+    .eq('project_id', req.params.projectId);
   if(error) return res.status(400).json({ error: error.message });
   res.json({ success: true });
 });
