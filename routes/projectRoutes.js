@@ -386,14 +386,79 @@ qcRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
 
 qcRouter.post('/', requireAuth, requireProjectAccess, async (req, res) => {
   const { phase_id, contractor_id, contractor_name, trade, checklist_items } = req.body;
+  const pid = req.params.projectId;
+
+  // A submission belongs to a phase. Per project would mean a plumber could not
+  // sign off Underground until Final was finished months later.
+  if(!phase_id) return res.status(400).json({ error: 'phase_id is required' });
+
+  const { data: phase } = await supabaseAdmin.from('phases')
+    .select('id, name, assignee, tasks, completed_tasks')
+    .eq('id', phase_id).eq('project_id', pid).maybeSingle();
+  if(!phase) return res.status(404).json({ error: 'That phase is not on this project' });
+
+  // requireProjectAccess proves they are ON the project. It says nothing about
+  // whose trade this phase is.
+  if(req.userRole === 'contractor'){
+    const { data: mine } = await supabaseAdmin.from('project_contractors')
+      .select('trade').eq('project_id', pid).eq('user_id', req.userId);
+    const trades = new Set(
+      (mine || [])
+        .map(function(r){ return String(r.trade || '').trim().toLowerCase(); })
+        .filter(Boolean)
+    );
+    if(!trades.has(String(phase.assignee || '').trim().toLowerCase())){
+      return res.status(403).json({ error: 'That phase is not your trade on this project' });
+    }
+  }
+
+  // The checklist unlocks when the phase's work is done. Enforced here, not only
+  // in the portal — a rule that exists only in the browser is advisory. Because
+  // completing a task requires five photos, this also means the evidence is in
+  // place before anything can be signed off.
+  // completed_tasks holds task INDICES; filtering to numbers ignores legacy names.
+  const tasks = Array.isArray(phase.tasks) ? phase.tasks : [];
+  const done  = (Array.isArray(phase.completed_tasks) ? phase.completed_tasks : [])
+    .filter(function(v){ return typeof v === 'number'; });
+  if(!tasks.length || done.length < tasks.length){
+    return res.status(400).json({
+      error: 'Complete every task on this phase before submitting QC',
+      tasks_total: tasks.length,
+      tasks_done: done.length,
+    });
+  }
+
+  // One open submission per phase. A phase sent back for revision can be
+  // resubmitted — that is what requesting a revision is for.
+  const { data: open } = await supabaseAdmin.from('qc_submissions')
+    .select('id, status').eq('project_id', pid).eq('phase_id', phase_id)
+    .in('status', ['submitted', 'approved']);
+  if(open && open.length){
+    return res.status(400).json({
+      error: open.some(function(s){ return s.status === 'approved'; })
+        ? 'QC for this phase has already been approved'
+        : 'QC for this phase has already been submitted and is awaiting review',
+    });
+  }
+
   const { data, error } = await supabaseAdmin.from('qc_submissions')
-    .insert({ project_id: req.params.projectId, phase_id, contractor_id, contractor_name, trade, checklist_items: checklist_items||[], status: 'submitted' })
+    .insert({
+      project_id:      pid,
+      phase_id:        phase_id,
+      contractor_id:   contractor_id || (req.userRole === 'contractor' ? req.userId : null),
+      contractor_name: contractor_name,
+      trade:           trade || phase.assignee || null,
+      checklist_items: checklist_items || [],
+      status:          'submitted',
+    })
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
   res.status(201).json(data);
 });
 
-qcRouter.put('/:id/approve', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+// requireProjectAccess added: this had requireRole but no project check, so an
+// owner/builder/pm in ANY company could approve any submission by id (F4).
+qcRouter.put('/:id/approve', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
   const { data, error } = await supabaseAdmin.from('qc_submissions')
     .update({ status: 'approved', reviewed_by: req.userId, reviewed_at: new Date().toISOString() })
     .eq('id', req.params.id).select().single();
@@ -401,7 +466,7 @@ qcRouter.put('/:id/approve', requireAuth, requireRole('owner','builder','pm'), a
   res.json(data);
 });
 
-qcRouter.put('/:id/revision', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
+qcRouter.put('/:id/revision', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
   const { revision_notes } = req.body;
   const { data, error } = await supabaseAdmin.from('qc_submissions')
     .update({ status: 'revision_requested', revision_notes, reviewed_by: req.userId, reviewed_at: new Date().toISOString() })
