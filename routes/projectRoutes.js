@@ -441,6 +441,15 @@ qcRouter.post('/', requireAuth, requireProjectAccess, async (req, res) => {
     });
   }
 
+  // A resubmission supersedes the revision request that prompted it. The row is
+  // kept — it is the record of what was sent back and why — but it stops showing
+  // as a live item, which it otherwise did forever, once per revision cycle.
+  try {
+    await supabaseAdmin.from('qc_submissions')
+      .update({ status: 'superseded' })
+      .eq('project_id', pid).eq('phase_id', phase_id).eq('status', 'revision_requested');
+  } catch(e){ console.log('[QC] could not supersede prior request:', e && e.message); }
+
   const { data, error } = await supabaseAdmin.from('qc_submissions')
     .insert({
       project_id:      pid,
