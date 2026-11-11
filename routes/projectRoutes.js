@@ -472,6 +472,20 @@ qcRouter.put('/:id/approve', requireAuth, requireRole('owner','builder','pm'), r
     .update({ status: 'approved', reviewed_by: req.userId, reviewed_at: new Date().toISOString() })
     .eq('id', req.params.id).select().single();
   if(error) return res.status(400).json({ error: error.message });
+
+  // Approving QC is the sign-off that completes the phase. This is one of only
+  // two routes to `complete`; the other is the builder's explicit action.
+  // A failed inspection still holds it back.
+  try {
+    const { applyDerivedStatus, syncProjectStatus } = require('../lib/phaseStatus');
+    if(data && data.phase_id){
+      const { data: phase } = await supabaseAdmin.from('phases')
+        .select('*').eq('id', data.phase_id).eq('project_id', req.params.projectId).single();
+      if(phase) await applyDerivedStatus(phase, req.params.projectId);
+      syncProjectStatus(req.params.projectId).catch(function(){});
+    }
+  } catch(e){ console.log('[QC] approve: phase status not updated -', e && e.message); }
+
   res.json(data);
 });
 

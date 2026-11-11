@@ -138,8 +138,16 @@ router.post('/', requireAuth, requireRole('owner','builder','pm'), requireProjec
   res.status(201).json(data);
 });
 
+// Status is derived in one place so the browser and the API cannot disagree.
+const { applyDerivedStatus, syncProjectStatus } = require('../lib/phaseStatus');
+
 // PUT /projects/:projectId/phases/:id
 router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProjectAccess, async (req, res) => {
+  // PRESENCE, not value, decides who owns status on this request. The builder's
+  // autosave sends status for every phase on every checkbox click, so comparing
+  // values would hand the browser authority over all of them. The edit modal and
+  // "mark complete" set it deliberately; the autosave omits it entirely.
+  const explicitStatus = Object.prototype.hasOwnProperty.call(req.body, 'status');
   // qc_items is the phase's QC checklist. It must be named here or it is
   // dropped without a word — the same way tasks and contractor were.
   const { name, status, start_date, end_date, actual_end, notes, sort_order, tasks, completed_tasks, progress, days, color, simultaneous, assignee, contractor, qc_items } = req.body;
@@ -155,7 +163,10 @@ router.put('/:id', requireAuth, requireRole('owner','builder','pm'), requireProj
     .single();
 
   if(error) return res.status(400).json({ error: error.message });
-  res.json(data);
+
+  const out = explicitStatus ? data : await applyDerivedStatus(data, req.params.projectId);
+  syncProjectStatus(req.params.projectId).catch(function(){});
+  res.json(out);
 });
 
 // PUT /projects/:projectId/phases — bulk update (reorder + status)
@@ -438,10 +449,16 @@ router.put('/:id/task-complete', requireAuth, requireProjectAccess, async (req, 
     .select().single();
   if(error) return res.status(400).json({ error: error.message });
 
+  // The omission that caused the Drywall defect: this route updated progress and
+  // left status untouched, so a phase a contractor finished stayed `pending`.
+  const out = await applyDerivedStatus(data, req.params.projectId);
+  syncProjectStatus(req.params.projectId).catch(function(){});
+
   res.json({
     success: true,
-    completed_tasks: data.completed_tasks,
-    progress: data.progress,
+    completed_tasks: out.completed_tasks,
+    progress: out.progress,
+    status: out.status,
     all_complete: tasks.length > 0 && done.length === tasks.length,
   });
 });
