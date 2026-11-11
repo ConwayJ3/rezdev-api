@@ -278,9 +278,31 @@ ctrRouter.put('/:id/archive', requireAuth, requireRole('owner','builder'),
 const payRouter = express.Router({ mergeParams: true });
 
 payRouter.get('/', requireAuth, requireProjectAccess, async (req, res) => {
-  const { data, error } = await req.db.from('contractor_payments')
-    .select(`id, project_id, contracted_amount, payment_method, contractor_name, created_at, payment_draws(*), contracts(title, contractor_id)`)
+  // requireProjectAccess only proves you belong to this PROJECT. Contractors
+  // and clients both pass it, so without the scoping below every sub on the job
+  // could read every other sub's contracted amount.
+  const BUILDER_SIDE = ['owner', 'builder', 'pm'];
+
+  let q = req.db.from('contractor_payments')
+    .select(`id, project_id, contractor_id, contracted_amount, payment_method, contractor_name, created_at, payment_draws(*), contracts(title, contractor_id)`)
     .eq('project_id', req.params.projectId);
+
+  if(req.userRole === 'contractor'){
+    // user -> contractors.user_id -> contractors.id, the convention every other
+    // contractor_id foreign key in this schema follows. Plural on purpose: the
+    // same person can hold a directory record under more than one builder,
+    // because contractors are scoped by company_id.
+    const { data: mine, error: mineErr } = await supabaseAdmin
+      .from('contractors').select('id').eq('user_id', req.userId);
+    // Fail closed. A scoping lookup that breaks should reveal nothing, not
+    // everything — same choice as the trade scoping in phases.js.
+    if(mineErr || !mine || !mine.length) return res.json([]);
+    q = q.in('contractor_id', mine.map(function(c){ return c.id; }));
+  } else if(BUILDER_SIDE.indexOf(req.userRole) < 0){
+    return res.json([]);
+  }
+
+  const { data, error } = await q;
   if(error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
