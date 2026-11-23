@@ -18,10 +18,68 @@ router.get('/', requireAuth, async (req, res) => {
       if(!projectIds.length) return res.json([]);
       const { data, error } = await supabaseAdmin
         .from('projects')
-        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order)')
+        .select('id, project_key, name, address, city, state, status, project_type, beds, baths, livable_sf, total_sf, company_id, created_at, updated_at, phases(id, name, status, progress, start_date, end_date, sort_order)')
         .in('id', projectIds)
         .order('created_at', { ascending: false });
       if(error) return res.status(400).json({ error: error.message });
+
+      // A contractor's "client" is the BUILDER, not the homeowner. The same sub
+      // can be working for several builders at once, so whose job this is
+      // matters to them; who owns the house is the builder's business and is
+      // deliberately not sent.
+      //
+      // Wrapped on its own: if these lookups fail the contractor still gets
+      // their projects without contact details, rather than an error where a
+      // task list should be.
+      try {
+        const companyIds = [...new Set((data||[]).map(p => p.company_id).filter(Boolean))];
+        if(companyIds.length){
+          const { data: companies } = await supabaseAdmin
+            .from('companies').select('id, name, phone').in('id', companyIds);
+          const byCompany = {};
+          (companies||[]).forEach(c => { byCompany[c.id] = c; });
+          (data||[]).forEach(p => {
+            const c = byCompany[p.company_id];
+            if(c) p.builder = { name: c.name || '', phone: c.phone || '' };
+          });
+        }
+
+        // The assigned PM, so a sub on site has someone to call. Earliest
+        // assignment wins when a project has more than one.
+        const { data: pmRows } = await supabaseAdmin
+          .from('pm_assignments')
+          .select('project_id, user_id, assigned_at')
+          .in('project_id', projectIds)
+          .order('assigned_at', { ascending: true });
+        const pmUserIds = [...new Set((pmRows||[]).map(r => r.user_id).filter(Boolean))];
+        if(pmUserIds.length){
+          const { data: pmUsers } = await supabaseAdmin
+            .from('users').select('id, first_name, last_name, phone').in('id', pmUserIds);
+          const byUser = {};
+          (pmUsers||[]).forEach(u => { byUser[u.id] = u; });
+          // Compare assigned_at rather than trusting row order. The query asks
+          // for it ascending, but "earliest wins" is the rule and the rule
+          // should not depend on the ordering surviving the round trip.
+          const firstPmFor = {}, firstPmAt = {};
+          (pmRows||[]).forEach(r => {
+            if(!r.project_id || !r.user_id) return;
+            const at = r.assigned_at || '';
+            if(firstPmFor[r.project_id] === undefined || at < firstPmAt[r.project_id]){
+              firstPmFor[r.project_id] = r.user_id;
+              firstPmAt[r.project_id]  = at;
+            }
+          });
+          (data||[]).forEach(p => {
+            const u = byUser[firstPmFor[p.id]];
+            if(!u) return;
+            const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+            if(name || u.phone) p.pm = { name: name, phone: u.phone || '' };
+          });
+        }
+      } catch(e){
+        console.log('[projects] contractor contact lookup failed:', e && e.message);
+      }
+
       return res.json(data);
     }
 
