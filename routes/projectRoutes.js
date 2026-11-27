@@ -741,9 +741,13 @@ rfpRouter.post('/:id/award', requireAuth, requireRole('owner','builder'), async 
           if(hit) trade = hit;
         }
 
+        // Same three-column target as the Manage Team save. On two columns
+        // this quietly REPLACED the sub's trade every time a second RFP was
+        // awarded to him on the same project — an assignment changing with
+        // nobody having opened Manage Project Team.
         const { error: aErr } = await supabaseAdmin.from('project_contractors')
-          .upsert({ project_id: rfp.project_id, user_id: awardedUserId, trade: trade },
-                  { onConflict: 'project_id,user_id' });
+          .upsert({ project_id: rfp.project_id, user_id: awardedUserId, trade: trade || '' },
+                  { onConflict: 'project_id,user_id,trade' });
         if(aErr) console.log('[RFP] project assignment failed:', aErr.message);
         else assigned = true;
       }
@@ -908,10 +912,15 @@ pContractorRouter.get('/', requireAuth, async (req, res) => {
 });
 pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
   try {
-    const { error } = await supabaseAdmin.from('project_contractors')
+    // ?trade=Plumbing takes ONE trade off and leaves this sub's other
+    // trades on the project. With no trade the whole person comes off,
+    // which is what every caller written before multi-trade expects.
+    let q = supabaseAdmin.from('project_contractors')
       .delete()
       .eq('project_id', req.params.projectId)
       .eq('user_id', req.params.userId);
+    if(typeof req.query.trade === 'string') q = q.eq('trade', req.query.trade);
+    const { error } = await q;
     if(error) return res.status(400).json({ error: error.message });
     res.json({ ok: true });
   } catch(e){ res.status(500).json({ error: e.message }); }
@@ -921,17 +930,19 @@ pContractorRouter.post('/', requireAuth, requireRole('owner','builder','pm'), as
   try {
     const { user_id, trade } = req.body;
     if(!user_id) return res.status(400).json({ error: 'user_id required' });
-    const { data, error } = await supabaseAdmin.from('project_contractors').upsert({ project_id: req.params.projectId, user_id, trade }, { onConflict: 'project_id,user_id' }).select().single();
+    // One row per (project, user, TRADE). Keyed on (project, user) this
+    // OVERWROTE the sub's existing trade instead of adding a second one,
+    // so a plumber could never also carry Gas on the same job.
+    // trade is coerced to '' because Postgres treats NULLs as distinct in
+    // a unique constraint, which would let blank rows pile up.
+    const { data, error } = await supabaseAdmin.from('project_contractors').upsert({ project_id: req.params.projectId, user_id, trade: trade || '' }, { onConflict: 'project_id,user_id,trade' }).select().single();
     if(error) return res.status(400).json({ error: error.message });
     res.json(data);
   } catch(e){ res.status(500).json({ error: e.message }); }
 });
-pContractorRouter.delete('/:userId', requireAuth, requireRole('owner','builder','pm'), async (req, res) => {
-  try {
-    await supabaseAdmin.from('project_contractors').delete().eq('project_id', req.params.projectId).eq('user_id', req.params.userId);
-    res.json({ success: true });
-  } catch(e){ res.status(500).json({ error: e.message }); }
-});
+// A second DELETE /:userId used to be declared here. Express serves the
+// first matching route, so it never ran — and it was the one that looked
+// easiest to edit. Removed so there is exactly one delete to reason about.
 
 // LIEN WAIVERS
 const lienRouter = require('express').Router({ mergeParams: true });
